@@ -13300,6 +13300,23 @@ var schemaYAML = typed.YAMLObject(`types:
           elementType:
             scalar: string
           elementRelationship: atomic
+- name: io.k8s.api.resource.v1.NodeTopologyInfo
+  map:
+    fields:
+    - name: nodeId
+      type:
+        scalar: numeric
+      default: 0
+    - name: properties
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: resources
+      type:
+        map:
+          elementType:
+            scalar: numeric
 - name: io.k8s.api.resource.v1.OpaqueDeviceConfiguration
   map:
     fields:
@@ -13463,6 +13480,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: nodeSelector
       type:
         namedType: io.k8s.api.core.v1.NodeSelector
+    - name: nodeTopology
+      type:
+        namedType: io.k8s.api.resource.v1.NodeTopologyInfo
     - name: perDeviceNodeSelection
       type:
         scalar: boolean

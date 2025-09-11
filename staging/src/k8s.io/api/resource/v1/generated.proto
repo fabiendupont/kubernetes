@@ -1241,6 +1241,29 @@ message NetworkDeviceData {
   optional string hardwareAddress = 3;
 }
 
+// NodeTopologyInfo describes NUMA topology for resources in a ResourceSlice.
+// This enables topology-aware resource allocation and placement decisions.
+message NodeTopologyInfo {
+  // NodeID identifies the NUMA node that provides the resources.
+  // This should correspond to the NUMA node ID as reported by the kernel.
+  //
+  // +required
+  optional int32 nodeId = 1;
+
+  // Resources contains the available resource quantities per NUMA node.
+  // The key is the resource name (e.g., "hugepages-2Mi", "memory"),
+  // and the value is the available quantity.
+  //
+  // +required
+  map<string, int64> resources = 2;
+
+  // Properties contains NUMA-specific properties for the resources.
+  // Examples include memory bandwidth, cache size, or other NUMA characteristics.
+  //
+  // +optional
+  map<string, string> properties = 3;
+}
+
 // OpaqueDeviceConfiguration contains configuration parameters for a driver
 // in a format defined by the driver vendor.
 message OpaqueDeviceConfiguration {
@@ -1585,5 +1608,12 @@ message ResourceSliceSpec {
   // +listType=atomic
   // +featureGate=DRAPartitionableDevices
   repeated CounterSet sharedCounters = 8;
+
+  // NodeTopology describes NUMA topology information for resources in this pool.
+  // This field enables topology-aware resource allocation and placement decisions.
+  //
+  // +optional
+  // +featureGate=DRATopologyManager
+  optional NodeTopologyInfo nodeTopology = 9;
 }
 

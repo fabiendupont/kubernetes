@@ -172,6 +172,7 @@ func dropDisabledFields(newSlice, oldSlice *resource.ResourceSlice) {
 	dropDisabledDRAPartitionableDevicesFields(newSlice, oldSlice)
 	dropDisabledDRADeviceBindingConditionsFields(newSlice, oldSlice)
 	dropDisabledDRAConsumableCapacityFields(newSlice, oldSlice)
+	dropDisabledDRANodeTopologyFields(newSlice, oldSlice)
 }
 
 func dropDisabledDRADeviceTaintsFields(newSlice, oldSlice *resource.ResourceSlice) {
@@ -299,4 +300,23 @@ func dropDisabledDRAConsumableCapacityFields(newSlice, oldSlice *resource.Resour
 			}
 		}
 	}
+}
+
+// dropDisabledDRANodeTopologyFields drops NodeTopology field from the new slice
+// if the DRATopologyManager feature gate is not enabled.
+func dropDisabledDRANodeTopologyFields(newSlice, oldSlice *resource.ResourceSlice) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.DRATopologyManager) || draNodeTopologyFeatureInUse(oldSlice) {
+		return
+	}
+
+	newSlice.Spec.NodeTopology = nil
+}
+
+// draNodeTopologyFeatureInUse returns true if the old slice has NodeTopology field set.
+func draNodeTopologyFeatureInUse(slice *resource.ResourceSlice) bool {
+	if slice == nil {
+		return false
+	}
+
+	return slice.Spec.NodeTopology != nil
 }

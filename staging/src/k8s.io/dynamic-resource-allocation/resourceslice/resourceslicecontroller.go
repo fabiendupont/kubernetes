@@ -160,6 +160,9 @@ type Slice struct {
 	Devices                []resourceapi.Device
 	SharedCounters         []resourceapi.CounterSet
 	PerDeviceNodeSelection *bool
+	// NodeTopology describes NUMA topology information for resources in this slice.
+	// This field enables topology-aware resource allocation and placement decisions.
+	NodeTopology *resourceapi.NodeTopologyInfo
 }
 
 // +k8s:deepcopy-gen=true
@@ -818,6 +821,7 @@ func (c *Controller) syncPool(ctx context.Context, poolName string) error {
 				Devices:                pool.Slices[i].Devices,
 				SharedCounters:         pool.Slices[i].SharedCounters,
 				PerDeviceNodeSelection: pool.Slices[i].PerDeviceNodeSelection,
+				NodeTopology:           pool.Slices[i].NodeTopology,
 			},
 		}
 

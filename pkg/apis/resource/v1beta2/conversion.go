@@ -21,7 +21,14 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1beta2"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/conversion"
+	"k8s.io/kubernetes/pkg/apis/resource"
 )
+
+// Convert_resource_ResourceSliceSpec_To_v1beta2_ResourceSliceSpec converts an internal ResourceSliceSpec to v1beta2 ResourceSliceSpec.
+func Convert_resource_ResourceSliceSpec_To_v1beta2_ResourceSliceSpec(in *resource.ResourceSliceSpec, out *resourceapi.ResourceSliceSpec, s conversion.Scope) error {
+	return autoConvert_resource_ResourceSliceSpec_To_v1beta2_ResourceSliceSpec(in, out, s)
+}
 
 func addConversionFuncs(scheme *runtime.Scheme) error {
 	if err := scheme.AddFieldLabelConversionFunc(SchemeGroupVersion.WithKind("ResourceSlice"),

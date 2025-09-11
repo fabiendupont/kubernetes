@@ -52,6 +52,8 @@ import (
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/cm/dra/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/resourceupdates"
+	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
+	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
@@ -1583,4 +1585,725 @@ func TestUpdateAllocatedResourcesStatus(t *testing.T) {
 	resourceHealth := resourceStatus.Resources[0]
 	assert.Equal(t, v1.ResourceID(cdiID), resourceHealth.ResourceID, "ResourceHealth ResourceID mismatch")
 	assert.Equal(t, v1.ResourceHealthStatusHealthy, resourceHealth.Health, "ResourceHealth Health status mismatch")
+}
+
+// TestGetTopologyHints tests the GetTopologyHints method of the DRA Manager.
+func TestGetTopologyHints(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Test case 1: Container with no DRA resources
+	t.Run("NoDRAResources", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceCPU:    resource.MustParse("100m"),
+								v1.ResourceMemory: resource.MustParse("128Mi"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetTopologyHints(pod, &pod.Spec.Containers[0])
+		assert.Empty(t, hints, "Should return empty hints for non-DRA resources")
+	})
+
+	// Test case 2: Container with DRA resources but no ResourceSlices
+	t.Run("DRAResourcesNoSlices", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetTopologyHints(pod, &pod.Spec.Containers[0])
+		// Should return empty hints since getResourceSlicesForResource returns empty slice
+		assert.Empty(t, hints, "Should return empty hints when no ResourceSlices available")
+	})
+
+	// Test case 3: Test isDRAResource method
+	t.Run("IsDRAResource", func(t *testing.T) {
+		testCases := []struct {
+			resourceName v1.ResourceName
+			expected     bool
+		}{
+			{v1.ResourceName("test-driver.cdi.k8s.io/device"), true},
+			{v1.ResourceName("nvidia.com/gpu"), true},
+			{v1.ResourceName("device.example.com/foo"), true},
+			{v1.ResourceName("cpu"), false},
+			{v1.ResourceName("memory"), false},
+			{v1.ResourceName("storage"), false},
+			{v1.ResourceName("hugepages-2Mi"), false}, // Native K8s resource, not DRA
+		}
+
+		for _, tc := range testCases {
+			result := manager.isDRAResource(tc.resourceName)
+			assert.Equal(t, tc.expected, result, "isDRAResource(%s) should return %v", tc.resourceName, tc.expected)
+		}
+	})
+}
+
+// TestGetPodTopologyHints tests the GetPodTopologyHints method of the DRA Manager.
+func TestGetPodTopologyHints(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Test case 1: Pod with no DRA resources
+	t.Run("NoDRAResources", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceCPU:    resource.MustParse("100m"),
+								v1.ResourceMemory: resource.MustParse("128Mi"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetPodTopologyHints(pod)
+		assert.Empty(t, hints, "Should return empty hints for non-DRA resources")
+	})
+
+	// Test case 2: Pod with multiple containers with DRA resources
+	t.Run("MultipleContainers", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "container1",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+							},
+						},
+					},
+					{
+						Name: "container2",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("1"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetPodTopologyHints(pod)
+		// Should return empty hints since getResourceSlicesForResource returns empty slice
+		assert.Empty(t, hints, "Should return empty hints when no ResourceSlices available")
+	})
+}
+
+// TestAllocate tests the Allocate method of the DRA Manager.
+func TestAllocate(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name: "test-container",
+					Resources: v1.ResourceRequirements{
+						Requests: v1.ResourceList{
+							v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Test that Allocate returns no error
+	err = manager.Allocate(pod, &pod.Spec.Containers[0])
+	assert.NoError(t, err, "Allocate should not return an error")
+}
+
+// TestCreateTopologyHintFromResourceSlice tests the createTopologyHintFromResourceSlice method.
+func TestCreateTopologyHintFromResourceSlice(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Test case 1: ResourceSlice with no NodeTopology
+	t.Run("NoNodeTopology", func(t *testing.T) {
+		slice := resourceapi.ResourceSlice{
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeTopology: nil,
+			},
+		}
+
+		hint := manager.createTopologyHintFromResourceSlice(slice, "test-driver.cdi.k8s.io/device")
+		assert.Nil(t, hint, "Should return nil when NodeTopology is nil")
+	})
+
+	// Test case 2: ResourceSlice with NodeTopology but no matching resource
+	t.Run("NoMatchingResource", func(t *testing.T) {
+		slice := resourceapi.ResourceSlice{
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeTopology: &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Resources: map[string]int64{
+						"hugepages-1Gi": 10,
+					},
+				},
+			},
+		}
+
+		hint := manager.createTopologyHintFromResourceSlice(slice, "test-driver.cdi.k8s.io/device")
+		assert.Nil(t, hint, "Should return nil when resource not found in NodeTopology")
+	})
+
+	// Test case 3: ResourceSlice with NodeTopology and matching resource
+	t.Run("MatchingResource", func(t *testing.T) {
+		slice := resourceapi.ResourceSlice{
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeTopology: &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Resources: map[string]int64{
+						"test-driver.cdi.k8s.io/device": 4,
+					},
+				},
+			},
+		}
+
+		hint := manager.createTopologyHintFromResourceSlice(slice, "test-driver.cdi.k8s.io/device")
+		require.NotNil(t, hint, "Should return a hint when resource is found")
+		assert.True(t, hint.Preferred, "Hint should be marked as preferred")
+		assert.NotNil(t, hint.NUMANodeAffinity, "Hint should have NUMA node affinity")
+	})
+
+	// Test case 4: ResourceSlice with NodeTopology but zero quantity
+	t.Run("ZeroQuantity", func(t *testing.T) {
+		slice := resourceapi.ResourceSlice{
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeTopology: &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Resources: map[string]int64{
+						"test-driver.cdi.k8s.io/device": 0,
+					},
+				},
+			},
+		}
+
+		hint := manager.createTopologyHintFromResourceSlice(slice, "test-driver.cdi.k8s.io/device")
+		assert.Nil(t, hint, "Should return nil when resource quantity is zero")
+	})
+}
+
+// TestMergeTopologyHints tests the mergeTopologyHints method.
+func TestMergeTopologyHints(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Create test hints
+	bitmask1, _ := bitmask.NewBitMask(0)
+	bitmask2, _ := bitmask.NewBitMask(1)
+	hint1 := topologymanager.TopologyHint{
+		NUMANodeAffinity: bitmask1,
+		Preferred:        true,
+	}
+	hint2 := topologymanager.TopologyHint{
+		NUMANodeAffinity: bitmask2,
+		Preferred:        false,
+	}
+
+	hints1 := []topologymanager.TopologyHint{hint1}
+	hints2 := []topologymanager.TopologyHint{hint2}
+
+	// Test merging
+	merged := manager.mergeTopologyHints(hints1, hints2)
+	assert.Len(t, merged, 2, "Should merge both hint slices")
+	assert.Contains(t, merged, hint1, "Should contain hint1")
+	assert.Contains(t, merged, hint2, "Should contain hint2")
+}
+
+// TestGetDRAResources tests the getDRAResources method.
+func TestGetDRAResources(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Test case 1: Container with mixed resources
+	t.Run("MixedResources", func(t *testing.T) {
+		container := &v1.Container{
+			Name: "test-container",
+			Resources: v1.ResourceRequirements{
+				Requests: v1.ResourceList{
+					v1.ResourceCPU:                             resource.MustParse("100m"),
+					v1.ResourceMemory:                          resource.MustParse("128Mi"),
+					v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+					v1.ResourceName("nvidia.com/gpu"):          resource.MustParse("1"),
+					v1.ResourceName("device.example.com"):      resource.MustParse("1"),
+				},
+			},
+		}
+
+		draResources := manager.getDRAResources(container)
+		expected := []string{"test-driver.cdi.k8s.io/device", "nvidia.com/gpu", "device.example.com"}
+		assert.ElementsMatch(t, expected, draResources, "Should extract DRA resources correctly")
+	})
+
+	// Test case 2: Container with no DRA resources
+	t.Run("NoDRAResources", func(t *testing.T) {
+		container := &v1.Container{
+			Name: "test-container",
+			Resources: v1.ResourceRequirements{
+				Requests: v1.ResourceList{
+					v1.ResourceCPU:    resource.MustParse("100m"),
+					v1.ResourceMemory: resource.MustParse("128Mi"),
+				},
+			},
+		}
+
+		draResources := manager.getDRAResources(container)
+		assert.Empty(t, draResources, "Should return empty slice for no DRA resources")
+	})
+}
+
+// mockResourceSliceProvider implements ResourceSliceProvider for testing.
+type mockResourceSliceProvider struct {
+	slices map[string][]resourceapi.ResourceSlice
+	err    error
+}
+
+func (m *mockResourceSliceProvider) GetResourceSlicesForResource(resourceName string) ([]resourceapi.ResourceSlice, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if slices, exists := m.slices[resourceName]; exists {
+		return slices, nil
+	}
+	return []resourceapi.ResourceSlice{}, nil
+}
+
+// TestGetTopologyHintsWithResourceSlices tests the HintProvider implementation with actual ResourceSlice data.
+func TestGetTopologyHintsWithResourceSlices(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	testResourceSlices := []resourceapi.ResourceSlice{
+		{
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeTopology: &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Resources: map[string]int64{
+						"test-driver.cdi.k8s.io/device": 4,    // 4 devices
+						"memory":                         1024 * 1024 * 1024, // 1Gi
+					},
+					Properties: map[string]string{
+						"bandwidth": "100Gbps",
+						"latency":   "low",
+					},
+				},
+			},
+		},
+		{
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeTopology: &resourceapi.NodeTopologyInfo{
+					NodeID: 1,
+					Resources: map[string]int64{
+						"test-driver.cdi.k8s.io/device": 2,    // 2 devices  
+						"memory":                         512 * 1024 * 1024, // 512Mi
+					},
+					Properties: map[string]string{
+						"bandwidth": "50Gbps",
+						"latency":   "medium",
+					},
+				},
+			},
+		},
+	}
+
+	// Create a mock ResourceSliceProvider
+	mockProvider := &mockResourceSliceProvider{
+		slices: map[string][]resourceapi.ResourceSlice{
+			"test-driver.cdi.k8s.io/device": testResourceSlices,
+		},
+	}
+	manager.SetResourceSliceProvider(mockProvider)
+
+	// Test case 1: Container requesting DRA devices with topology hints
+	t.Run("DRADevicesWithTopology", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetTopologyHints(pod, &pod.Spec.Containers[0])
+		
+		require.Contains(t, hints, "test-driver.cdi.k8s.io/device", "Should contain hints for DRA devices")
+		deviceHints := hints["test-driver.cdi.k8s.io/device"]
+		require.Len(t, deviceHints, 2, "Should have hints for both NUMA nodes")
+		
+		// Verify first hint (NUMA node 0)
+		assert.True(t, deviceHints[0].Preferred, "First hint should be preferred")
+		assert.NotNil(t, deviceHints[0].NUMANodeAffinity, "First hint should have NUMA affinity")
+		
+		// Verify second hint (NUMA node 1)
+		assert.True(t, deviceHints[1].Preferred, "Second hint should be preferred")
+		assert.NotNil(t, deviceHints[1].NUMANodeAffinity, "Second hint should have NUMA affinity")
+	})
+
+	// Test case 2: Resource not available in ResourceSlices
+	t.Run("ResourceNotAvailable", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetTopologyHints(pod, &pod.Spec.Containers[0])
+		assert.Empty(t, hints, "Should return empty hints for unavailable resources")
+	})
+}
+
+// TestGetPodTopologyHintsIntegration tests the pod-level topology hints with multiple containers.
+func TestGetPodTopologyHintsIntegration(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Mock different data for different resources
+	mockProvider := &mockResourceSliceProvider{
+		slices: map[string][]resourceapi.ResourceSlice{
+			"test-driver.cdi.k8s.io/device": {
+				{
+					Spec: resourceapi.ResourceSliceSpec{
+						NodeTopology: &resourceapi.NodeTopologyInfo{
+							NodeID: 0,
+							Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 4},
+						},
+					},
+				},
+			},
+			"nvidia.com/gpu": {
+				{
+					Spec: resourceapi.ResourceSliceSpec{
+						NodeTopology: &resourceapi.NodeTopologyInfo{
+							NodeID: 1,
+							Resources: map[string]int64{"nvidia.com/gpu": 2},
+						},
+					},
+				},
+			},
+		},
+	}
+	manager.SetResourceSliceProvider(mockProvider)
+
+	// Test case: Pod with multiple containers requesting different DRA resources
+	t.Run("MultipleContainersWithDifferentResources", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "device-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+							},
+						},
+					},
+					{
+						Name: "gpu-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetPodTopologyHints(pod)
+		
+		require.Contains(t, hints, "test-driver.cdi.k8s.io/device", "Should contain hints for DRA devices")
+		require.Contains(t, hints, "nvidia.com/gpu", "Should contain hints for GPU")
+		
+		deviceHints := hints["test-driver.cdi.k8s.io/device"]
+		gpuHints := hints["nvidia.com/gpu"]
+		
+		require.Len(t, deviceHints, 1, "Should have one hint for DRA devices")
+		require.Len(t, gpuHints, 1, "Should have one hint for GPU")
+	})
+}
+
+// TestTopologyHintGeneration tests the topology hint generation logic with edge cases.
+func TestTopologyHintGeneration(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Test case 1: ResourceSlice with invalid NUMA node ID
+	t.Run("InvalidNUMANodeID", func(t *testing.T) {
+		slice := resourceapi.ResourceSlice{
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeTopology: &resourceapi.NodeTopologyInfo{
+					NodeID: -1, // Invalid node ID
+					Resources: map[string]int64{
+						"test-driver.cdi.k8s.io/device": 4,
+					},
+				},
+			},
+		}
+
+		hint := manager.createTopologyHintFromResourceSlice(slice, "test-driver.cdi.k8s.io/device")
+		assert.Nil(t, hint, "Should return nil for invalid NUMA node ID")
+	})
+
+	// Test case 2: Multiple NUMA nodes with same resource
+	t.Run("MultipleNUMANodes", func(t *testing.T) {
+		slices := []resourceapi.ResourceSlice{
+			{
+				Spec: resourceapi.ResourceSliceSpec{
+					NodeTopology: &resourceapi.NodeTopologyInfo{
+						NodeID: 0,
+						Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 2},
+					},
+				},
+			},
+			{
+				Spec: resourceapi.ResourceSliceSpec{
+					NodeTopology: &resourceapi.NodeTopologyInfo{
+						NodeID: 2,
+						Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 4},
+					},
+				},
+			},
+		}
+
+		var hints []topologymanager.TopologyHint
+		for _, slice := range slices {
+			hint := manager.createTopologyHintFromResourceSlice(slice, "test-driver.cdi.k8s.io/device")
+			if hint != nil {
+				hints = append(hints, *hint)
+			}
+		}
+
+		require.Len(t, hints, 2, "Should generate hints for both NUMA nodes")
+		assert.True(t, hints[0].Preferred, "First hint should be preferred")
+		assert.True(t, hints[1].Preferred, "Second hint should be preferred")
+	})
+
+	// Test case 3: Hint merging with overlapping hints
+	t.Run("HintMerging", func(t *testing.T) {
+		bitmask1, _ := bitmask.NewBitMask(0)
+		bitmask2, _ := bitmask.NewBitMask(1)
+		bitmask3, _ := bitmask.NewBitMask(0) // Same as bitmask1
+
+		hints1 := []topologymanager.TopologyHint{
+			{NUMANodeAffinity: bitmask1, Preferred: true},
+			{NUMANodeAffinity: bitmask2, Preferred: false},
+		}
+		hints2 := []topologymanager.TopologyHint{
+			{NUMANodeAffinity: bitmask3, Preferred: true}, // Duplicate of first hint
+		}
+
+		merged := manager.mergeTopologyHints(hints1, hints2)
+		assert.Len(t, merged, 3, "Should merge all hints including duplicates")
+	})
+}
+
+// TestFeatureGateIntegration tests HintProvider behavior when feature gate is disabled.
+func TestHintProviderFeatureGateIntegration(t *testing.T) {
+	// Test case 1: Feature gate disabled
+	t.Run("FeatureGateDisabled", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, false)
+
+		// Create a test manager
+		tCtx := ktesting.Init(t)
+		manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+		require.NoError(t, err)
+
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Even when feature gate is disabled, the methods should still work
+		// but may return empty results
+		hints := manager.GetTopologyHints(pod, &pod.Spec.Containers[0])
+		// The behavior depends on implementation - it might return empty hints
+		// or still provide basic functionality
+		assert.NotNil(t, hints, "Should return valid map even when feature gate disabled")
+	})
+
+	// Test case 2: Feature gate re-enabled
+	t.Run("FeatureGateReEnabled", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+		// Create a test manager
+		tCtx := ktesting.Init(t)
+		manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+		require.NoError(t, err)
+
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetTopologyHints(pod, &pod.Spec.Containers[0])
+		assert.NotNil(t, hints, "Should return valid map when feature gate enabled")
+	})
+}
+
+// TestHintProviderErrorHandling tests error handling in the HintProvider implementation.
+func TestHintProviderErrorHandling(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, true)
+
+	// Create a test manager
+	tCtx := ktesting.Init(t)
+	manager, err := NewManager(tCtx.Logger(), fake.NewSimpleClientset(), t.TempDir())
+	require.NoError(t, err)
+
+	// Test case 1: Error in getResourceSlicesForResource
+	t.Run("ResourceSliceError", func(t *testing.T) {
+		// Create an error-returning mock provider
+		errorProvider := &mockResourceSliceProvider{
+			slices: map[string][]resourceapi.ResourceSlice{},
+			err:    fmt.Errorf("simulated API error"),
+		}
+		manager.SetResourceSliceProvider(errorProvider)
+
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{
+						Name: "test-container",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{
+								v1.ResourceName("test-driver.cdi.k8s.io/device"): resource.MustParse("2"),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		hints := manager.GetTopologyHints(pod, &pod.Spec.Containers[0])
+		// Should handle error gracefully and return empty hints
+		assert.Empty(t, hints, "Should return empty hints on ResourceSlice error")
+	})
+
+	// Test case 2: Nil container
+	t.Run("NilContainer", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		}
+
+		// Should not panic with nil container
+		hints := manager.GetTopologyHints(pod, nil)
+		assert.Empty(t, hints, "Should return empty hints for nil container")
+	})
+
+	// Test case 3: Empty pod
+	t.Run("EmptyPod", func(t *testing.T) {
+		hints := manager.GetPodTopologyHints(&v1.Pod{})
+		assert.Empty(t, hints, "Should return empty hints for empty pod")
+	})
 }

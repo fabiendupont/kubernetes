@@ -38,6 +38,18 @@ type ResourceSliceSpec struct {
 	Devices                []Device
 	PerDeviceNodeSelection *bool
 	SharedCounters         []CounterSet
+	NodeTopology           *NodeTopologyInfo
+}
+
+// NodeTopologyInfo describes NUMA topology for resources in a ResourceSlice.
+// This enables topology-aware resource allocation and placement decisions.
+type NodeTopologyInfo struct {
+	// NodeID identifies the NUMA node that provides the resources.
+	NodeID int32
+	// Resources contains the available resource quantities per NUMA node.
+	Resources map[string]int64
+	// Properties contains NUMA-specific properties for the resources.
+	Properties map[string]string
 }
 
 type CounterSet struct {

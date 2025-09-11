@@ -367,6 +367,17 @@ func (NetworkDeviceData) SwaggerDoc() map[string]string {
 	return map_NetworkDeviceData
 }
 
+var map_NodeTopologyInfo = map[string]string{
+	"":           "NodeTopologyInfo describes NUMA topology for resources in a ResourceSlice. This enables topology-aware resource allocation and placement decisions.",
+	"nodeId":     "NodeID identifies the NUMA node that provides the resources. This should correspond to the NUMA node ID as reported by the kernel.",
+	"resources":  "Resources contains the available resource quantities per NUMA node. The key is the resource name (e.g., \"hugepages-2Mi\", \"memory\"), and the value is the available quantity.",
+	"properties": "Properties contains NUMA-specific properties for the resources. Examples include memory bandwidth, cache size, or other NUMA characteristics.",
+}
+
+func (NodeTopologyInfo) SwaggerDoc() map[string]string {
+	return map_NodeTopologyInfo
+}
+
 var map_OpaqueDeviceConfiguration = map[string]string{
 	"":           "OpaqueDeviceConfiguration contains configuration parameters for a driver in a format defined by the driver vendor.",
 	"driver":     "Driver is used to determine which kubelet plugin needs to be passed these configuration parameters.\n\nAn admission policy provided by the driver developer could use this to decide whether it needs to validate them.\n\nMust be a DNS subdomain and should end with a DNS domain owned by the vendor of the driver.",
@@ -501,6 +512,7 @@ var map_ResourceSliceSpec = map[string]string{
 	"devices":                "Devices lists some or all of the devices in this pool.\n\nMust not have more than 128 entries.",
 	"perDeviceNodeSelection": "PerDeviceNodeSelection defines whether the access from nodes to resources in the pool is set on the ResourceSlice level or on each device. If it is set to true, every device defined the ResourceSlice must specify this individually.\n\nExactly one of NodeName, NodeSelector, AllNodes, and PerDeviceNodeSelection must be set.",
 	"sharedCounters":         "SharedCounters defines a list of counter sets, each of which has a name and a list of counters available.\n\nThe names of the SharedCounters must be unique in the ResourceSlice.\n\nThe maximum number of counters in all sets is 32.",
+	"nodeTopology":           "NodeTopology describes NUMA topology information for resources in this pool. This field enables topology-aware resource allocation and placement decisions.",
 }
 
 func (ResourceSliceSpec) SwaggerDoc() map[string]string {

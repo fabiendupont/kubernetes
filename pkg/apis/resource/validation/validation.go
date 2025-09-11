@@ -701,6 +701,11 @@ func validateResourceSliceSpec(spec, oldSpec *resource.ResourceSliceSpec, fldPat
 			return counterSet.Name, "name"
 		}, fldPath.Child("sharedCounters"))...)
 
+	// Validate NodeTopology if present
+	if spec.NodeTopology != nil {
+		allErrs = append(allErrs, validateNodeTopology(*spec.NodeTopology, fldPath.Child("nodeTopology"))...)
+	}
+
 	return allErrs
 }
 
@@ -1401,6 +1406,55 @@ func validateDeviceBindingParameters(bindingConditions, bindingFailureConditions
 	}
 	if len(bindingFailureConditions) == 0 && len(bindingConditions) > 0 {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("bindingFailureConditions"), bindingFailureConditions, "bindingFailureConditions are required to use bindingConditions"))
+	}
+
+	return allErrs
+}
+
+// validateNodeTopology validates the NodeTopology information.
+func validateNodeTopology(topology resource.NodeTopologyInfo, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	// NodeID can be any value including negative, but typically represents NUMA node IDs
+	// which start from 0. No specific validation needed beyond type checking.
+
+	// Validate Resources map
+	if topology.Resources != nil {
+		for resourceName, quantity := range topology.Resources {
+			if resourceName == "" {
+				allErrs = append(allErrs, field.Required(fldPath.Child("resources"), "resource name cannot be empty"))
+				continue
+			}
+			
+			if quantity < 0 {
+				allErrs = append(allErrs, field.Invalid(fldPath.Child("resources").Key(resourceName), quantity, "resource quantity must be non-negative"))
+			}
+			
+			// Validate resource name format (should be DNS subdomain or qualified name)
+			if errs := validation.IsQualifiedName(resourceName); len(errs) != 0 {
+				allErrs = append(allErrs, field.Invalid(fldPath.Child("resources").Key(resourceName), resourceName, strings.Join(errs, "; ")))
+			}
+		}
+	}
+
+	// Validate Properties map
+	if topology.Properties != nil {
+		for propName, propValue := range topology.Properties {
+			if propName == "" {
+				allErrs = append(allErrs, field.Required(fldPath.Child("properties"), "property name cannot be empty"))
+				continue
+			}
+			
+			// Validate property name format
+			if errs := validation.IsQualifiedName(propName); len(errs) != 0 {
+				allErrs = append(allErrs, field.Invalid(fldPath.Child("properties").Key(propName), propName, strings.Join(errs, "; ")))
+			}
+			
+			// Property values can be any string, but should not be excessively long
+			if len(propValue) > 1024 {
+				allErrs = append(allErrs, field.TooLong(fldPath.Child("properties").Key(propName), propValue, 1024))
+			}
+		}
 	}
 
 	return allErrs

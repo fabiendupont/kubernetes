@@ -15,3 +15,15 @@ limitations under the License.
 */
 
 package v1beta2
+
+import (
+	resourcev1 "k8s.io/api/resource/v1"
+	resourcev1beta2 "k8s.io/api/resource/v1beta2"
+	"k8s.io/apimachinery/pkg/conversion"
+)
+
+// Convert_v1_ResourceSliceSpec_To_v1beta2_ResourceSliceSpec manually converts ResourceSliceSpec from v1 to v1beta2.
+// The NodeTopology field doesn't exist in v1beta2, so it's dropped during conversion.
+func Convert_v1_ResourceSliceSpec_To_v1beta2_ResourceSliceSpec(in *resourcev1.ResourceSliceSpec, out *resourcev1beta2.ResourceSliceSpec, s conversion.Scope) error {
+	return autoConvert_v1_ResourceSliceSpec_To_v1beta2_ResourceSliceSpec(in, out, s)
+}

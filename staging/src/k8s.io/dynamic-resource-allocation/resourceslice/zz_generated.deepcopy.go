@@ -115,6 +115,11 @@ func (in *Slice) DeepCopyInto(out *Slice) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.NodeTopology != nil {
+		in, out := &in.NodeTopology, &out.NodeTopology
+		*out = new(resourcev1.NodeTopologyInfo)
+		(*in).DeepCopyInto(*out)
+	}
 	return
 }
 

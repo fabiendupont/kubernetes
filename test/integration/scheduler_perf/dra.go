@@ -221,9 +221,38 @@ func resourceSlice(driverName, nodeName string, capacity int) *resourceapi.Resou
 		},
 	}
 
+	// Add NodeTopology information if the DRATopologyManager feature is enabled
+	if utilfeature.DefaultFeatureGate.Enabled(features.DRATopologyManager) {
+		// Simulate NUMA topology for test purposes
+		slice.Spec.NodeTopology = &resourceapi.NodeTopologyInfo{
+			NodeID: 0, // Default to NUMA node 0 for simplicity
+			Resources: map[string]int64{
+				"memory": 1024 * 1024 * 1024, // 1Gi in bytes
+			},
+			Properties: map[string]string{
+				"distance": "0,10,20,30",
+			},
+		}
+	}
+
 	for i := 0; i < capacity; i++ {
-		slice.Spec.Devices = append(slice.Spec.Devices,
-			resourceapi.Device{
+		var device resourceapi.Device
+		if driverName == "test-driver.cdi.k8s.io" {
+			// Create huge page devices
+			device = resourceapi.Device{
+				Name: fmt.Sprintf("hugepage-instance-%d", i),
+				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					"hugepage_size":        {StringValue: ptr.To("2Mi")},
+					"driver":               {StringValue: ptr.To("test-driver.cdi.k8s.io")},
+					"dra_example_com_numa": {IntValue: ptr.To(int64(i % 2))}, // Simulate 2 NUMA nodes
+				},
+				Capacity: map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{
+					"hugepages_2Mi": {Value: resource.MustParse("1Gi")},
+				},
+			}
+		} else {
+			// Create GPU devices (default)
+			device = resourceapi.Device{
 				Name: fmt.Sprintf("instance-%d", i),
 				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
 					"model":                {StringValue: ptr.To("A100")},
@@ -234,8 +263,9 @@ func resourceSlice(driverName, nodeName string, capacity int) *resourceapi.Resou
 				Capacity: map[resourceapi.QualifiedName]resourceapi.DeviceCapacity{
 					"memory": {Value: resource.MustParse("1Gi")},
 				},
-			},
-		)
+			}
+		}
+		slice.Spec.Devices = append(slice.Spec.Devices, device)
 	}
 
 	return slice

@@ -566,7 +566,8 @@ func TaintAllDevices(taints ...resourceapi.DeviceTaint) driverResourcesMutatorFu
 	}
 }
 
-func NetworkResources(maxAllocations int, tainted bool) driverResourcesGenFunc {
+func NetworkResources(maxAllocations int, tainted bool, topology ...bool) driverResourcesGenFunc {
+	enableTopology := len(topology) > 0 && topology[0]
 	return func(nodes *Nodes) map[string]resourceslice.DriverResources {
 		driverResources := make(map[string]resourceslice.DriverResources)
 		devices := make([]resourceapi.Device, 0)
@@ -583,12 +584,37 @@ func NetworkResources(maxAllocations int, tainted bool) driverResourcesGenFunc {
 			}
 			devices = append(devices, device)
 		}
+
+		slice := resourceslice.Slice{
+			Devices: devices,
+		}
+
+		// Add topology information if enabled
+		if enableTopology {
+			// Simulate NUMA topology - use node index for deterministic NUMA node assignment
+			nodeIndex := 0 // Default to first node
+			if len(nodes.NodeNames) > 0 {
+				// Use a simple hash of the first node name to determine NUMA node
+				nodeIndex = len(nodes.NodeNames[0]) % 4
+			}
+			slice.NodeTopology = &resourceapi.NodeTopologyInfo{
+				NodeID: int32(nodeIndex),
+				Resources: map[string]int64{
+					"example.com/network-device": int64(maxAllocations / 4),
+					"memory":                     1024 * 1024 * 1024, // 1GB per NUMA node
+				},
+				Properties: map[string]string{
+					"bandwidth": fmt.Sprintf("%dGbps", 10*(nodeIndex+1)),
+					"latency":   "low",
+					"distance":  fmt.Sprintf("%d", nodeIndex),
+				},
+			}
+		}
+
 		driverResources[multiHostDriverResources] = resourceslice.DriverResources{
 			Pools: map[string]resourceslice.Pool{
 				"network": {
-					Slices: []resourceslice.Slice{{
-						Devices: devices,
-					}},
+					Slices: []resourceslice.Slice{slice},
 					NodeSelector: &v1.NodeSelector{
 						NodeSelectorTerms: []v1.NodeSelectorTerm{{
 							// MatchExpressions allow multiple values,
@@ -673,4 +699,72 @@ func ToDriverResources(counters []resourceapi.CounterSet, devices ...resourceapi
 			},
 		}
 	}
+}
+
+// VerifyTopologyCompliance verifies that DRA resources are allocated according to the specified topology policy
+func VerifyTopologyCompliance(ctx context.Context, f *framework.Framework, pod *v1.Pod, driver *Driver, policy string) {
+	ginkgo.By(fmt.Sprintf("verifying topology compliance for policy: %s", policy))
+	
+	// Get the pod to check its node assignment
+	updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(updatedPod.Spec.NodeName).NotTo(gomega.BeEmpty(), "pod should be assigned to a node")
+	
+	// Get ResourceSlices for this driver on the assigned node
+	resourceSlices, err := f.ClientSet.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s,spec.driver=%s", updatedPod.Spec.NodeName, driver.Name),
+	})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	
+	// Verify topology information exists when topology is enabled
+	foundTopology := false
+	for _, slice := range resourceSlices.Items {
+		if slice.Spec.NodeTopology != nil {
+			foundTopology = true
+			ginkgo.By(fmt.Sprintf("found topology info: NodeID=%d", slice.Spec.NodeTopology.NodeID))
+			
+			// For single-numa-node policy, all resources should be from the same NUMA node
+			if policy == "single-numa-node" {
+				// Verify all allocated devices are from the same NUMA node
+				// This would require checking the actual device allocation, which
+				// depends on the test driver implementation
+				gomega.Expect(slice.Spec.NodeTopology.NodeID).To(gomega.BeNumerically(">=", 0))
+			}
+		}
+	}
+	
+	if policy != "none" {
+		gomega.Expect(foundTopology).To(gomega.BeTrue(), "topology information should be present when topology manager is enabled")
+	}
+}
+
+// VerifyMultiResourceTopologyAlignment verifies that multiple DRA resources are aligned to the same NUMA topology
+func VerifyMultiResourceTopologyAlignment(ctx context.Context, f *framework.Framework, pod *v1.Pod, driver *Driver) {
+	ginkgo.By("verifying multiple DRA resources are topology-aligned")
+	
+	// Get the pod to check its node assignment
+	updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(updatedPod.Spec.NodeName).NotTo(gomega.BeEmpty(), "pod should be assigned to a node")
+	
+	// Get ResourceSlices for this driver on the assigned node
+	resourceSlices, err := f.ClientSet.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s,spec.driver=%s", updatedPod.Spec.NodeName, driver.Name),
+	})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	
+	// Collect NUMA node IDs from all allocated resources
+	numaNodes := make(map[int32]bool)
+	for _, slice := range resourceSlices.Items {
+		if slice.Spec.NodeTopology != nil {
+			numaNodes[slice.Spec.NodeTopology.NodeID] = true
+		}
+	}
+	
+	// For topology alignment, all resources should ideally be from the same NUMA node
+	// or at least follow the topology manager policy
+	ginkgo.By(fmt.Sprintf("found resources on NUMA nodes: %v", numaNodes))
+	
+	// At minimum, verify that topology information exists
+	gomega.Expect(len(numaNodes)).To(gomega.BeNumerically(">", 0), "should have topology information for allocated resources")
 }

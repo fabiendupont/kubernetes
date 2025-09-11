@@ -151,6 +151,44 @@ var sliceWithConsumableCapacity = func() *resource.ResourceSlice {
 	return obj
 }()
 
+var sliceWithNodeTopology = func() *resource.ResourceSlice {
+	obj := slice.DeepCopy()
+	obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+		NodeID: 0,
+		Resources: map[string]int64{
+			"test-driver.cdi.k8s.io/device": 4,
+			"memory":                        1024 * 1024 * 1024, // 1Gi
+		},
+		Properties: map[string]string{
+			"bandwidth": "high",
+			"latency":   "low",
+			"distance":  "0",
+		},
+	}
+	return obj
+}()
+
+var sliceWithComplexTopology = func() *resource.ResourceSlice {
+	obj := slice.DeepCopy()
+	obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+		NodeID: 1,
+		Resources: map[string]int64{
+			"test-driver.cdi.k8s.io/device": 8,
+			"test-driver.cdi.k8s.io/gpu":    2,
+			"memory":                        2048 * 1024 * 1024, // 2Gi
+			"bandwidth":                     1000000000,         // 1Gbps in bytes/sec
+		},
+		Properties: map[string]string{
+			"bandwidth":    "1Gbps",
+			"latency":      "5ms",
+			"distance":     "1",
+			"architecture": "x86_64",
+			"vendor":       "TestVendor",
+		},
+	}
+	return obj
+}()
+
 func TestResourceSliceStrategy(t *testing.T) {
 	if Strategy.NamespaceScoped() {
 		t.Errorf("ResourceSlice must not be namespace scoped")
@@ -169,6 +207,7 @@ func TestResourceSliceStrategyCreate(t *testing.T) {
 		bindingConditions       bool
 		deviceStatus            bool
 		consumableCapacity      bool
+		topologyManager         bool
 		expectedValidationError bool
 		expectObj               *resource.ResourceSlice
 	}{
@@ -305,6 +344,84 @@ func TestResourceSliceStrategyCreate(t *testing.T) {
 				return obj
 			}(),
 		},
+		"keep-fields-node-topology": {
+			obj:             sliceWithNodeTopology,
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.Generation = 1
+				return obj
+			}(),
+		},
+		"drop-fields-node-topology-disabled-feature": {
+			obj:             sliceWithNodeTopology,
+			topologyManager: false,
+			expectObj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Generation = 1
+				return obj
+			}(),
+		},
+		"keep-fields-complex-topology": {
+			obj:             sliceWithComplexTopology,
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := sliceWithComplexTopology.DeepCopy()
+				obj.Generation = 1
+				return obj
+			}(),
+		},
+		"drop-fields-complex-topology-disabled-feature": {
+			obj:             sliceWithComplexTopology,
+			topologyManager: false,
+			expectObj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Generation = 1
+				return obj
+			}(),
+		},
+		"node-topology-with-zero-node-id": {
+			obj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+					NodeID:    0,
+					Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 2},
+				}
+				return obj
+			}(),
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Generation = 1
+				obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+					NodeID:    0,
+					Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 2},
+				}
+				return obj
+			}(),
+		},
+		"node-topology-empty-resources": {
+			obj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+					NodeID:     1,
+					Resources:  map[string]int64{},
+					Properties: map[string]string{"test": "value"},
+				}
+				return obj
+			}(),
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Generation = 1
+				obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+					NodeID:     1,
+					Resources:  map[string]int64{},
+					Properties: map[string]string{"test": "value"},
+				}
+				return obj
+			}(),
+		},
 	}
 
 	for name, tc := range testCases {
@@ -314,6 +431,7 @@ func TestResourceSliceStrategyCreate(t *testing.T) {
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRADeviceBindingConditions, tc.bindingConditions)
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRAResourceClaimDeviceStatus, tc.deviceStatus)
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRAConsumableCapacity, tc.consumableCapacity)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, tc.topologyManager)
 
 			obj := tc.obj.DeepCopy()
 
@@ -344,6 +462,7 @@ func TestResourceSliceStrategyUpdate(t *testing.T) {
 		deviceStatus          bool
 		bindingConditions     bool
 		consumableCapacity    bool
+		topologyManager       bool
 		expectValidationError bool
 		expectObj             *resource.ResourceSlice
 	}{
@@ -636,6 +755,94 @@ func TestResourceSliceStrategyUpdate(t *testing.T) {
 				return obj
 			}(),
 		},
+		"keep-fields-node-topology": {
+			oldObj: slice,
+			newObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				obj.Generation = 1
+				return obj
+			}(),
+		},
+		"drop-fields-node-topology-disabled-feature": {
+			oldObj: slice,
+			newObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+			topologyManager: false,
+			expectObj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.ResourceVersion = "4"
+				obj.Generation = 1
+				return obj
+			}(),
+		},
+		"keep-existing-fields-node-topology": {
+			oldObj: sliceWithNodeTopology,
+			newObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+		},
+		"keep-existing-fields-node-topology-disabled-feature": {
+			oldObj: sliceWithNodeTopology,
+			newObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+			topologyManager: false,
+			expectObj: func() *resource.ResourceSlice {
+				obj := sliceWithNodeTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+		},
+		"update-topology-fields": {
+			oldObj: sliceWithNodeTopology,
+			newObj: func() *resource.ResourceSlice {
+				obj := sliceWithComplexTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := sliceWithComplexTopology.DeepCopy()
+				obj.ResourceVersion = "4"
+				obj.Generation = 1
+				return obj
+			}(),
+		},
+		"remove-topology-fields": {
+			oldObj: sliceWithComplexTopology,
+			newObj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.ResourceVersion = "4"
+				return obj
+			}(),
+			topologyManager: true,
+			expectObj: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.ResourceVersion = "4"
+				obj.Generation = 1
+				return obj
+			}(),
+		},
 	}
 
 	for name, tc := range testcases {
@@ -645,6 +852,7 @@ func TestResourceSliceStrategyUpdate(t *testing.T) {
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRADeviceBindingConditions, tc.bindingConditions)
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRAResourceClaimDeviceStatus, tc.deviceStatus)
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRAConsumableCapacity, tc.consumableCapacity)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, tc.topologyManager)
 
 			oldObj := tc.oldObj.DeepCopy()
 			newObj := tc.newObj.DeepCopy()
@@ -666,6 +874,206 @@ func TestResourceSliceStrategyUpdate(t *testing.T) {
 			expectObj := tc.expectObj.DeepCopy()
 			assert.Equal(t, expectObj, newObj)
 
+		})
+	}
+}
+
+// TestDRANodeTopologyFeatureInUse tests the draNodeTopologyFeatureInUse helper function.
+func TestDRANodeTopologyFeatureInUse(t *testing.T) {
+	testCases := map[string]struct {
+		slice    *resource.ResourceSlice
+		expected bool
+	}{
+		"nil slice": {
+			slice:    nil,
+			expected: false,
+		},
+		"slice without NodeTopology": {
+			slice:    slice,
+			expected: false,
+		},
+		"slice with NodeTopology": {
+			slice:    sliceWithNodeTopology,
+			expected: true,
+		},
+		"slice with complex topology": {
+			slice:    sliceWithComplexTopology,
+			expected: true,
+		},
+		"slice with empty NodeTopology": {
+			slice: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Spec.NodeTopology = &resource.NodeTopologyInfo{}
+				return obj
+			}(),
+			expected: true,
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			result := draNodeTopologyFeatureInUse(tc.slice)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+// TestDropDisabledDRANodeTopologyFields tests the dropDisabledDRANodeTopologyFields function directly.
+func TestDropDisabledDRANodeTopologyFields(t *testing.T) {
+
+	testCases := map[string]struct {
+		newSlice        *resource.ResourceSlice
+		oldSlice        *resource.ResourceSlice
+		featureEnabled  bool
+		expectedTopology *resource.NodeTopologyInfo
+	}{
+		"feature enabled, new slice with topology": {
+			newSlice:        sliceWithNodeTopology.DeepCopy(),
+			oldSlice:        nil,
+			featureEnabled:  true,
+			expectedTopology: sliceWithNodeTopology.Spec.NodeTopology,
+		},
+		"feature disabled, new slice with topology, no old slice": {
+			newSlice:        sliceWithNodeTopology.DeepCopy(),
+			oldSlice:        nil,
+			featureEnabled:  false,
+			expectedTopology: nil,
+		},
+		"feature disabled, new slice with topology, old slice with topology": {
+			newSlice:        sliceWithNodeTopology.DeepCopy(),
+			oldSlice:        sliceWithNodeTopology.DeepCopy(),
+			featureEnabled:  false,
+			expectedTopology: sliceWithNodeTopology.Spec.NodeTopology, // Should keep existing
+		},
+		"feature disabled, new slice without topology": {
+			newSlice:        slice.DeepCopy(),
+			oldSlice:        nil,
+			featureEnabled:  false,
+			expectedTopology: nil,
+		},
+		"feature enabled, changing topology": {
+			newSlice:        sliceWithComplexTopology.DeepCopy(),
+			oldSlice:        sliceWithNodeTopology.DeepCopy(),
+			featureEnabled:  true,
+			expectedTopology: sliceWithComplexTopology.Spec.NodeTopology,
+		},
+		"feature disabled, changing topology but old has topology": {
+			newSlice:        sliceWithComplexTopology.DeepCopy(),
+			oldSlice:        sliceWithNodeTopology.DeepCopy(),
+			featureEnabled:  false,
+			expectedTopology: sliceWithComplexTopology.Spec.NodeTopology, // Keep since old slice had it
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, tc.featureEnabled)
+
+			dropDisabledDRANodeTopologyFields(tc.newSlice, tc.oldSlice)
+
+			assert.Equal(t, tc.expectedTopology, tc.newSlice.Spec.NodeTopology)
+		})
+	}
+}
+
+// TestResourceSliceTopologyParsing tests parsing and validation of ResourceSlice topology information.
+func TestResourceSliceTopologyParsing(t *testing.T) {
+	ctx := genericapirequest.NewDefaultContext()
+
+	testCases := map[string]struct {
+		slice               *resource.ResourceSlice
+		featureEnabled      bool
+		expectValidationErr bool
+		expectedTopology    *resource.NodeTopologyInfo
+	}{
+		"valid topology parsing": {
+			slice:          sliceWithNodeTopology,
+			featureEnabled: true,
+			expectedTopology: &resource.NodeTopologyInfo{
+				NodeID: 0,
+				Resources: map[string]int64{
+					"test-driver.cdi.k8s.io/device": 4,
+					"memory":                        1024 * 1024 * 1024,
+				},
+				Properties: map[string]string{
+					"bandwidth": "high",
+					"latency":   "low",
+					"distance":  "0",
+				},
+			},
+		},
+		"complex topology parsing": {
+			slice:          sliceWithComplexTopology,
+			featureEnabled: true,
+			expectedTopology: &resource.NodeTopologyInfo{
+				NodeID: 1,
+				Resources: map[string]int64{
+					"test-driver.cdi.k8s.io/device": 8,
+					"test-driver.cdi.k8s.io/gpu":    2,
+					"memory":                        2048 * 1024 * 1024,
+					"bandwidth":                     1000000000,
+				},
+				Properties: map[string]string{
+					"bandwidth":    "1Gbps",
+					"latency":      "5ms",
+					"distance":     "1",
+					"architecture": "x86_64",
+					"vendor":       "TestVendor",
+				},
+			},
+		},
+		"topology with negative node id": {
+			slice: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+					NodeID:    -1,
+					Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 1},
+				}
+				return obj
+			}(),
+			featureEnabled: true,
+			expectedTopology: &resource.NodeTopologyInfo{
+				NodeID:    -1,
+				Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 1},
+			},
+		},
+		"topology with zero resources": {
+			slice: func() *resource.ResourceSlice {
+				obj := slice.DeepCopy()
+				obj.Spec.NodeTopology = &resource.NodeTopologyInfo{
+					NodeID:    0,
+					Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 0},
+				}
+				return obj
+			}(),
+			featureEnabled: true,
+			expectedTopology: &resource.NodeTopologyInfo{
+				NodeID:    0,
+				Resources: map[string]int64{"test-driver.cdi.k8s.io/device": 0},
+			},
+		},
+		"topology dropped when feature disabled": {
+			slice:            sliceWithNodeTopology,
+			featureEnabled:   false,
+			expectedTopology: nil,
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRATopologyManager, tc.featureEnabled)
+
+			obj := tc.slice.DeepCopy()
+
+			Strategy.PrepareForCreate(ctx, obj)
+			errs := Strategy.Validate(ctx, obj)
+
+			if tc.expectValidationErr {
+				assert.NotEmpty(t, errs, "Expected validation errors")
+			} else {
+				assert.Empty(t, errs, "Unexpected validation errors: %v", errs)
+				assert.Equal(t, tc.expectedTopology, obj.Spec.NodeTopology)
+			}
 		})
 	}
 }

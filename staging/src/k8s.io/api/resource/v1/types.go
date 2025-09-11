@@ -177,6 +177,36 @@ type ResourceSliceSpec struct {
 	// +listType=atomic
 	// +featureGate=DRAPartitionableDevices
 	SharedCounters []CounterSet `json:"sharedCounters,omitempty" protobuf:"bytes,8,name=sharedCounters"`
+
+	// NodeTopology describes NUMA topology information for resources in this pool.
+	// This field enables topology-aware resource allocation and placement decisions.
+	//
+	// +optional
+	// +featureGate=DRATopologyManager
+	NodeTopology *NodeTopologyInfo `json:"nodeTopology,omitempty" protobuf:"bytes,9,opt,name=nodeTopology"`
+}
+
+// NodeTopologyInfo describes NUMA topology for resources in a ResourceSlice.
+// This enables topology-aware resource allocation and placement decisions.
+type NodeTopologyInfo struct {
+	// NodeID identifies the NUMA node that provides the resources.
+	// This should correspond to the NUMA node ID as reported by the kernel.
+	//
+	// +required
+	NodeID int32 `json:"nodeId" protobuf:"varint,1,name=nodeId"`
+
+	// Resources contains the available resource quantities per NUMA node.
+	// The key is the resource name (e.g., "hugepages-2Mi", "memory"),
+	// and the value is the available quantity.
+	//
+	// +required
+	Resources map[string]int64 `json:"resources" protobuf:"bytes,2,name=resources"`
+
+	// Properties contains NUMA-specific properties for the resources.
+	// Examples include memory bandwidth, cache size, or other NUMA characteristics.
+	//
+	// +optional
+	Properties map[string]string `json:"properties,omitempty" protobuf:"bytes,3,opt,name=properties"`
 }
 
 // CounterSet defines a named set of counters

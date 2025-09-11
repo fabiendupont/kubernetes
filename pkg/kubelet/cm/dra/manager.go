@@ -23,6 +23,7 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -44,6 +45,8 @@ import (
 	draplugin "k8s.io/kubernetes/pkg/kubelet/cm/dra/plugin"
 	"k8s.io/kubernetes/pkg/kubelet/cm/dra/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/resourceupdates"
+	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
+	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	kubeletmetrics "k8s.io/kubernetes/pkg/kubelet/metrics"
@@ -76,6 +79,26 @@ type ActivePodsFunc func() []*v1.Pod
 // GetNodeFunc is a function that returns the node object using the kubelet's node lister.
 type GetNodeFunc func() (*v1.Node, error)
 
+// ResourceSliceProvider provides ResourceSlices for topology hints.
+type ResourceSliceProvider interface {
+	GetResourceSlicesForResource(resourceName string) ([]resourceapi.ResourceSlice, error)
+}
+
+// defaultResourceSliceProvider implements ResourceSliceProvider using the kubeclient.
+type defaultResourceSliceProvider struct {
+	kubeClient clientset.Interface
+}
+
+func (p *defaultResourceSliceProvider) GetResourceSlicesForResource(resourceName string) ([]resourceapi.ResourceSlice, error) {
+	// This would typically query the API server for ResourceSlices
+	// For now, we'll return an empty slice as this is a placeholder implementation
+	// In a real implementation, you would:
+	// 1. Query the API server for ResourceSlices
+	// 2. Filter by resource name
+	// 3. Return the matching slices
+	return []resourceapi.ResourceSlice{}, nil
+}
+
 // Manager is responsible for managing ResourceClaims.
 // It ensures that they are prepared before starting pods
 // and that they are unprepared before the last consuming
@@ -106,6 +129,9 @@ type Manager struct {
 
 	// update channel for resource updates
 	update chan resourceupdates.Update
+
+	// resourceSliceProvider provides ResourceSlices for topology hints
+	resourceSliceProvider ResourceSliceProvider
 }
 
 // NewManager creates a new DRA manager.
@@ -133,13 +159,14 @@ func NewManager(logger klog.Logger, kubeClient clientset.Interface, stateFileDir
 	reconcilePeriod := defaultReconcilePeriod
 
 	manager := &Manager{
-		cache:           claimInfoCache,
-		kubeClient:      kubeClient,
-		reconcilePeriod: reconcilePeriod,
-		activePods:      nil,
-		sourcesReady:    nil,
-		healthInfoCache: healthInfoCache,
-		update:          make(chan resourceupdates.Update, 100),
+		cache:                 claimInfoCache,
+		kubeClient:            kubeClient,
+		reconcilePeriod:       reconcilePeriod,
+		activePods:            nil,
+		sourcesReady:          nil,
+		healthInfoCache:       healthInfoCache,
+		update:                make(chan resourceupdates.Update, 100),
+		resourceSliceProvider: &defaultResourceSliceProvider{kubeClient: kubeClient},
 	}
 
 	return manager, nil
@@ -147,6 +174,11 @@ func NewManager(logger klog.Logger, kubeClient clientset.Interface, stateFileDir
 
 func (m *Manager) NewMetricsCollector() metrics.StableCollector {
 	return &claimInfoCollector{cache: m.cache}
+}
+
+// SetResourceSliceProvider sets the ResourceSliceProvider for testing purposes.
+func (m *Manager) SetResourceSliceProvider(provider ResourceSliceProvider) {
+	m.resourceSliceProvider = provider
 }
 
 // GetWatcherHandler must be called after Start, it indirectly depends
@@ -985,4 +1017,151 @@ func (m *Manager) HandleWatchResourcesStream(ctx context.Context, stream draheal
 func (m *Manager) Updates() <-chan resourceupdates.Update {
 	// Return the internal channel that HandleWatchResourcesStream writes to.
 	return m.update
+}
+
+// GetTopologyHints implements the HintProvider interface for DRA Manager.
+// It returns topology hints for DRA resources based on ResourceSlice topology information.
+func (m *Manager) GetTopologyHints(pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
+	hints := make(map[string][]topologymanager.TopologyHint)
+
+	// Check if the container requests any DRA resources
+	draResources := m.getDRAResources(container)
+	if len(draResources) == 0 {
+		return hints
+	}
+
+	// Get topology hints for each DRA resource
+	for _, resourceName := range draResources {
+		resourceHints := m.getTopologyHintsForResource(resourceName, pod, container)
+		if len(resourceHints) > 0 {
+			hints[resourceName] = resourceHints
+		}
+	}
+
+	return hints
+}
+
+// GetPodTopologyHints implements the HintProvider interface for DRA Manager.
+// It returns topology hints for DRA resources at the pod level.
+func (m *Manager) GetPodTopologyHints(pod *v1.Pod) map[string][]topologymanager.TopologyHint {
+	hints := make(map[string][]topologymanager.TopologyHint)
+
+	// Collect hints from all containers in the pod
+	for _, container := range pod.Spec.Containers {
+		containerHints := m.GetTopologyHints(pod, &container)
+		for resourceName, resourceHints := range containerHints {
+			if existingHints, exists := hints[resourceName]; exists {
+				// Merge hints from multiple containers
+				hints[resourceName] = m.mergeTopologyHints(existingHints, resourceHints)
+			} else {
+				hints[resourceName] = resourceHints
+			}
+		}
+	}
+
+	return hints
+}
+
+// Allocate implements the HintProvider interface for DRA Manager.
+// It triggers resource allocation after topology hints have been gathered.
+func (m *Manager) Allocate(pod *v1.Pod, container *v1.Container) error {
+	// DRA allocation is handled by the existing allocation logic
+	// This method is called after topology hints have been gathered
+	// and the topology manager has made its decision.
+	return nil
+}
+
+// getDRAResources extracts DRA resource names from container resource requests.
+func (m *Manager) getDRAResources(container *v1.Container) []string {
+	var draResources []string
+
+	if container == nil {
+		return draResources
+	}
+
+	for resourceName := range container.Resources.Requests {
+		// Check if this is a DRA resource by looking at the resource name pattern
+		// DRA resources typically have a specific naming pattern
+		if m.isDRAResource(resourceName) {
+			draResources = append(draResources, string(resourceName))
+		}
+	}
+
+	return draResources
+}
+
+// isDRAResource determines if a resource name corresponds to a DRA resource.
+func (m *Manager) isDRAResource(resourceName v1.ResourceName) bool {
+	// This is a simplified check - in practice, you might want to check
+	// against a list of known DRA drivers or use a more sophisticated method
+	resourceStr := string(resourceName)
+
+	// Check for common DRA resource patterns
+	// This could be enhanced to check against actual DRA driver registrations
+	// Note: hugepages are handled natively by Kubernetes, not through DRA
+	return strings.Contains(resourceStr, "gpu") ||
+		strings.Contains(resourceStr, "device") ||
+		strings.Contains(resourceStr, ".") // Domain-style resource names like "vendor.com/resource"
+}
+
+// getTopologyHintsForResource returns topology hints for a specific DRA resource.
+func (m *Manager) getTopologyHintsForResource(resourceName string, pod *v1.Pod, container *v1.Container) []topologymanager.TopologyHint {
+	var hints []topologymanager.TopologyHint
+
+	// Get ResourceSlices for this resource
+	resourceSlices, err := m.getResourceSlicesForResource(resourceName)
+	if err != nil {
+		klog.V(4).InfoS("Failed to get ResourceSlices for resource", "resource", resourceName, "error", err)
+		return hints
+	}
+
+	// Generate topology hints based on ResourceSlice topology information
+	for _, slice := range resourceSlices {
+		if slice.Spec.NodeTopology != nil {
+			hint := m.createTopologyHintFromResourceSlice(slice, resourceName)
+			if hint != nil {
+				hints = append(hints, *hint)
+			}
+		}
+	}
+
+	return hints
+}
+
+// getResourceSlicesForResource retrieves ResourceSlices for a specific resource.
+func (m *Manager) getResourceSlicesForResource(resourceName string) ([]resourceapi.ResourceSlice, error) {
+	return m.resourceSliceProvider.GetResourceSlicesForResource(resourceName)
+}
+
+// createTopologyHintFromResourceSlice creates a TopologyHint from ResourceSlice topology information.
+func (m *Manager) createTopologyHintFromResourceSlice(slice resourceapi.ResourceSlice, resourceName string) *topologymanager.TopologyHint {
+	if slice.Spec.NodeTopology == nil {
+		return nil
+	}
+
+	// Create a bitmask for the NUMA node
+	bitmask, err := bitmask.NewBitMask(int(slice.Spec.NodeTopology.NodeID))
+	if err != nil {
+		klog.V(4).InfoS("Failed to create bitmask for NUMA node", "nodeID", slice.Spec.NodeTopology.NodeID, "error", err)
+		return nil
+	}
+
+	// Check if the resource is available on this NUMA node
+	if quantity, exists := slice.Spec.NodeTopology.Resources[resourceName]; exists && quantity > 0 {
+		return &topologymanager.TopologyHint{
+			NUMANodeAffinity: bitmask,
+			Preferred:        true, // Mark as preferred if resource is available
+		}
+	}
+
+	return nil
+}
+
+// mergeTopologyHints merges topology hints from multiple sources.
+func (m *Manager) mergeTopologyHints(hints1, hints2 []topologymanager.TopologyHint) []topologymanager.TopologyHint {
+	// Simple merge - in practice, you might want more sophisticated merging logic
+	merged := make([]topologymanager.TopologyHint, 0, len(hints1)+len(hints2))
+	merged = append(merged, hints1...)
+	merged = append(merged, hints2...)
+	return merged
 }

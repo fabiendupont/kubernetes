@@ -36,6 +36,7 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -48,7 +49,20 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/features"
 )
+
+// detectNUMANode detects or simulates the current NUMA node.
+// For testing purposes, this returns a simple NUMA node detection.
+// In a real implementation, this would query /sys/devices/system/node/
+func detectNUMANode() int32 {
+	// For testing purposes, simulate NUMA node 0
+	// In a real implementation, you could:
+	// 1. Read /sys/devices/system/node/online
+	// 2. Query the current process NUMA affinity  
+	// 3. Use numa library calls
+	return 0
+}
 
 // NewCommand creates a *cobra.Command object with default parameters.
 func NewCommand() *cobra.Command {
@@ -212,12 +226,32 @@ func NewCommand() *cobra.Command {
 				Name: fmt.Sprintf("device-%02d", i),
 			}
 		}
+
+		// Create the base slice
+		slice := resourceslice.Slice{
+			Devices: devices,
+		}
+
+		// Add topology information if the DRATopologyManager feature gate is enabled
+		if utilfeature.DefaultFeatureGate.Enabled(features.DRATopologyManager) {
+			slice.NodeTopology = &resourceapi.NodeTopologyInfo{
+				NodeID: detectNUMANode(),
+				Resources: map[string]int64{
+					*driverName + "/device": int64(*numDevices),
+					"memory":                1024 * 1024 * 1024, // 1Gi in bytes for test
+				},
+				Properties: map[string]string{
+					"bandwidth": "high",
+					"latency":   "low",
+					"distance":  "0",
+				},
+			}
+		}
+
 		driverResources := resourceslice.DriverResources{
 			Pools: map[string]resourceslice.Pool{
 				*nodeName: {
-					Slices: []resourceslice.Slice{{
-						Devices: devices,
-					}},
+					Slices: []resourceslice.Slice{slice},
 				},
 			},
 		}

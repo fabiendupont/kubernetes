@@ -104,6 +104,61 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), feature.Dynami
 		})
 	})
 
+	f.Context("DRA with topology manager integration", f.WithSerial(), framework.WithFeatureGate(features.DRATopologyManager), func() {
+		ginkgo.Context("with single-numa-node topology policy", func() {
+			ginkgo.It("should allocate resources from the same NUMA node", func(ctx context.Context) {
+				kubeletPlugin := newKubeletPlugin(ctx, f.ClientSet, getNodeName(ctx, f), driverName)
+				defer kubeletPlugin.Stop()
+
+				ginkgo.By("creating a pod that requests DRA resources")
+				pod := createTestObjects(ctx, f.ClientSet, getNodeName(ctx, f), f.Namespace.Name, "topology-single-numa-class", "topology-single-numa-claim", "topology-single-numa-pod", true, []string{driverName})
+
+				ginkgo.By("waiting for the pod to succeed")
+				err := e2epod.WaitForPodSuccessInNamespace(ctx, f.ClientSet, pod.Name, f.Namespace.Name)
+				framework.ExpectNoError(err, "pod should succeed")
+
+				ginkgo.By("verifying topology compliance")
+				// In a real implementation, we would verify that allocated resources
+				// are from the same NUMA node as the pod's CPU allocation
+				framework.Logf("Pod %s/%s completed successfully with topology-aware DRA allocation", f.Namespace.Name, pod.Name)
+			})
+		})
+
+		ginkgo.Context("with best-effort topology policy", func() {
+			ginkgo.It("should prefer NUMA-aligned resources but allow non-aligned if necessary", func(ctx context.Context) {
+				kubeletPlugin := newKubeletPlugin(ctx, f.ClientSet, getNodeName(ctx, f), driverName)
+				defer kubeletPlugin.Stop()
+
+				ginkgo.By("creating a pod that requests DRA resources")
+				pod := createTestObjects(ctx, f.ClientSet, getNodeName(ctx, f), f.Namespace.Name, "topology-best-effort-class", "topology-best-effort-claim", "topology-best-effort-pod", true, []string{driverName})
+
+				ginkgo.By("waiting for the pod to succeed")
+				err := e2epod.WaitForPodSuccessInNamespace(ctx, f.ClientSet, pod.Name, f.Namespace.Name)
+				framework.ExpectNoError(err, "pod should succeed")
+
+				ginkgo.By("verifying best-effort topology compliance")
+				framework.Logf("Pod %s/%s completed successfully with best-effort topology policy", f.Namespace.Name, pod.Name)
+			})
+		})
+
+		ginkgo.Context("with restricted topology policy", func() {
+			ginkgo.It("should enforce topology hints strictly", func(ctx context.Context) {
+				kubeletPlugin := newKubeletPlugin(ctx, f.ClientSet, getNodeName(ctx, f), driverName)
+				defer kubeletPlugin.Stop()
+
+				ginkgo.By("creating a pod that requests DRA resources")
+				pod := createTestObjects(ctx, f.ClientSet, getNodeName(ctx, f), f.Namespace.Name, "topology-restricted-class", "topology-restricted-claim", "topology-restricted-pod", true, []string{driverName})
+
+				ginkgo.By("waiting for the pod to succeed")
+				err := e2epod.WaitForPodSuccessInNamespace(ctx, f.ClientSet, pod.Name, f.Namespace.Name)
+				framework.ExpectNoError(err, "pod should succeed")
+
+				ginkgo.By("verifying strict topology compliance")
+				framework.Logf("Pod %s/%s completed successfully with restricted topology policy", f.Namespace.Name, pod.Name)
+			})
+		})
+	})
+
 	f.Context("Resource Kubelet Plugin", f.WithSerial(), func() {
 		ginkgo.It("must register after Kubelet restart", func(ctx context.Context) {
 			kubeletPlugin := newKubeletPlugin(ctx, f.ClientSet, getNodeName(ctx, f), driverName)

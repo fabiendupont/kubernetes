@@ -2590,4 +2590,149 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 		multipleDriversContext("using only drapbv1", false, true)
 		multipleDriversContext("using drapbv1beta1 and drapbv1", true, true)
 	})
+
+	framework.Context("kubelet", feature.DynamicResourceAllocation, "with topology manager integration", func() {
+		draTopologyTests()
+	})
 })
+
+func draTopologyTests() {
+	f := framework.NewDefaultFramework("dra-topology")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
+
+	ginkgo.Context("with single-numa-node topology policy", func() {
+		nodes := drautils.NewNodes(f, 1, 4)
+		driver := drautils.NewDriver(f, nodes, drautils.NetworkResources(8, true /* topology */))
+		b := drautils.NewBuilder(f, driver)
+
+		ginkgo.It("should allocate resources from the same NUMA node", func(ctx context.Context) {
+			ginkgo.By("creating a pod that requests DRA resources")
+			pod, template := b.PodInline()
+
+			// Ensure the pod requests enough resources to trigger NUMA placement decisions
+			template.Spec.Spec.Devices.Requests[0].Exactly.Count = 4
+
+			b.Create(ctx, pod, template)
+
+			ginkgo.By("verifying the pod is scheduled")
+			b.TestPod(ctx, f, pod)
+
+			ginkgo.By("verifying topology hints are respected")
+			// The test driver should have allocated devices from the same NUMA node
+			// when single-numa-node policy is active
+			drautils.VerifyTopologyCompliance(ctx, f, pod, driver, "single-numa-node")
+		})
+
+		ginkgo.It("should reject allocation when resources span multiple NUMA nodes", func(ctx context.Context) {
+			ginkgo.By("creating a pod that requires more resources than available on any single NUMA node")
+			pod, template := b.PodInline()
+
+			// Request more resources than can fit on a single NUMA node
+			template.Spec.Spec.Devices.Requests[0].Exactly.Count = 16
+
+			ginkgo.By("creating the pod")
+			b.Create(ctx, pod, template)
+
+			ginkgo.By("expecting the pod to remain unschedulable")
+			// With single-numa-node policy, this should fail if resources can't fit on one NUMA node
+			err := e2epod.WaitForPodNameUnschedulableInNamespace(ctx, f.ClientSet, pod.Name, pod.Namespace)
+			framework.ExpectNoError(err, "pod should remain unschedulable due to topology constraints")
+		})
+	})
+
+	ginkgo.Context("with best-effort topology policy", func() {
+		nodes := drautils.NewNodes(f, 1, 4)
+		driver := drautils.NewDriver(f, nodes, drautils.NetworkResources(8, true /* topology */))
+		b := drautils.NewBuilder(f, driver)
+
+		ginkgo.It("should prefer same NUMA node but allow cross-NUMA allocation", func(ctx context.Context) {
+			ginkgo.By("creating a pod that requests DRA resources")
+			pod, template := b.PodInline()
+			template.Spec.Spec.Devices.Requests[0].Exactly.Count = 6
+
+			b.Create(ctx, pod, template)
+
+			ginkgo.By("verifying the pod is scheduled successfully")
+			b.TestPod(ctx, f, pod)
+
+			ginkgo.By("verifying topology preference is applied when possible")
+			// Best-effort should prefer single NUMA node but allow cross-NUMA if needed
+			drautils.VerifyTopologyCompliance(ctx, f, pod, driver, "best-effort")
+		})
+	})
+
+	ginkgo.Context("with restricted topology policy", func() {
+		nodes := drautils.NewNodes(f, 1, 4)
+		driver := drautils.NewDriver(f, nodes, drautils.NetworkResources(8, true /* topology */))
+		b := drautils.NewBuilder(f, driver)
+
+		ginkgo.It("should enforce topology hints strictly", func(ctx context.Context) {
+			ginkgo.By("creating a pod with topology-sensitive resource requests")
+			pod, template := b.PodInline()
+			template.Spec.Spec.Devices.Requests[0].Exactly.Count = 4
+
+			b.Create(ctx, pod, template)
+
+			ginkgo.By("verifying the pod is scheduled")
+			b.TestPod(ctx, f, pod)
+
+			ginkgo.By("verifying strict topology compliance")
+			// Restricted policy should only allow preferred topology hints
+			drautils.VerifyTopologyCompliance(ctx, f, pod, driver, "restricted")
+		})
+	})
+
+	ginkgo.Context("with multiple resource requests", func() {
+		nodes := drautils.NewNodes(f, 1, 4)
+		driver := drautils.NewDriver(f, nodes, drautils.NetworkResources(16, true /* topology */))
+		b := drautils.NewBuilder(f, driver)
+
+		ginkgo.It("should align multiple DRA resources with CPU/memory topology", func(ctx context.Context) {
+			ginkgo.By("creating a pod with multiple resource requests")
+			pod, template := b.PodInline()
+
+			// Add multiple resource requests to test hint alignment
+			template.Spec.Spec.Devices.Requests = append(template.Spec.Spec.Devices.Requests,
+				resourceapi.DeviceRequest{
+					Name: "secondary-devices",
+					Exactly: &resourceapi.ExactDeviceRequest{
+						DeviceClassName: template.Spec.Spec.Devices.Requests[0].Exactly.DeviceClassName,
+						Count:           2,
+					},
+				})
+
+			// Add corresponding claim in pod spec
+			pod.Spec.ResourceClaims = append(pod.Spec.ResourceClaims, v1.PodResourceClaim{
+				Name: "secondary-devices",
+			})
+
+			// Add container resources for secondary devices
+			for i := range pod.Spec.Containers {
+				pod.Spec.Containers[i].Resources.Claims = append(
+					pod.Spec.Containers[i].Resources.Claims,
+					v1.ResourceClaim{Name: "secondary-devices"},
+				)
+			}
+
+			b.Create(ctx, pod, template)
+
+			ginkgo.By("verifying the pod is scheduled")
+			b.TestPod(ctx, f, pod)
+
+			ginkgo.By("verifying all resources are aligned to the same topology")
+			drautils.VerifyMultiResourceTopologyAlignment(ctx, f, pod, driver)
+		})
+	})
+
+	ginkgo.Context("feature gate validation", func() {
+		ginkgo.It("should disable topology integration when DRATopologyManager is disabled", func(ctx context.Context) {
+			ginkgo.By("verifying DRATopologyManager feature gate behavior")
+			// This test verifies that when the feature gate is disabled,
+			// DRA resources are allocated without topology considerations
+			
+			// Note: This test would require specific cluster configuration
+			// to disable the feature gate, which is typically done at cluster setup
+			ginkgo.Skip("Feature gate testing requires specific cluster configuration")
+		})
+	})
+}

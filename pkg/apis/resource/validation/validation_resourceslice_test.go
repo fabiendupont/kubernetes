@@ -853,6 +853,75 @@ func TestValidateResourceSlice(t *testing.T) {
 			wantFailures: field.ErrorList{field.Invalid(field.NewPath("spec", "devices").Index(0).Child("bindingFailureConditions").Index(0), "condition1", "bindingFailureConditions must not overlap with bindingConditions")},
 			slice:        testResourceSliceWithBindingConditions(goodName, goodName, driverName, 1, []string{"condition1", "condition2"}, []string{"condition1", "condition3"}),
 		},
+		"valid-node-topology": {
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSlice(goodName, goodName, driverName, 1)
+				slice.Spec.NodeTopology = &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Resources: map[string]int64{
+						"test-driver.cdi.k8s.io/device": 4,
+						"memory":                        1024 * 1024 * 1024,
+					},
+					Properties: map[string]string{
+						"distance": "0,10,20,30",
+						"latency":  "low",
+					},
+				}
+				return slice
+			}(),
+		},
+		"negative-resource-quantity": {
+			wantFailures: field.ErrorList{field.Invalid(field.NewPath("spec", "nodeTopology", "resources").Key("memory"), int64(-1), "resource quantity must be non-negative")},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSlice(goodName, goodName, driverName, 1)
+				slice.Spec.NodeTopology = &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Resources: map[string]int64{
+						"memory": -1,
+					},
+				}
+				return slice
+			}(),
+		},
+		"invalid-resource-name": {
+			wantFailures: field.ErrorList{field.Required(field.NewPath("spec", "nodeTopology", "resources"), "resource name cannot be empty")},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSlice(goodName, goodName, driverName, 1)
+				slice.Spec.NodeTopology = &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Resources: map[string]int64{
+						"": 1024,
+					},
+				}
+				return slice
+			}(),
+		},
+		"invalid-property-name": {
+			wantFailures: field.ErrorList{field.Required(field.NewPath("spec", "nodeTopology", "properties"), "property name cannot be empty")},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSlice(goodName, goodName, driverName, 1)
+				slice.Spec.NodeTopology = &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Properties: map[string]string{
+						"": "value",
+					},
+				}
+				return slice
+			}(),
+		},
+		"too-long-property-value": {
+			wantFailures: field.ErrorList{field.TooLong(field.NewPath("spec", "nodeTopology", "properties").Key("test"), strings.Repeat("x", 1025), 1024)},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSlice(goodName, goodName, driverName, 1)
+				slice.Spec.NodeTopology = &resourceapi.NodeTopologyInfo{
+					NodeID: 0,
+					Properties: map[string]string{
+						"test": strings.Repeat("x", 1025),
+					},
+				}
+				return slice
+			}(),
+		},
 	}
 
 	for name, scenario := range scenarios {

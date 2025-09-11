@@ -958,6 +958,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"k8s.io/api/resource/v1.DeviceToleration":                                                               schema_k8sio_api_resource_v1_DeviceToleration(ref),
 		"k8s.io/api/resource/v1.ExactDeviceRequest":                                                             schema_k8sio_api_resource_v1_ExactDeviceRequest(ref),
 		"k8s.io/api/resource/v1.NetworkDeviceData":                                                              schema_k8sio_api_resource_v1_NetworkDeviceData(ref),
+		"k8s.io/api/resource/v1.NodeTopologyInfo":                                                               schema_k8sio_api_resource_v1_NodeTopologyInfo(ref),
 		"k8s.io/api/resource/v1.OpaqueDeviceConfiguration":                                                      schema_k8sio_api_resource_v1_OpaqueDeviceConfiguration(ref),
 		"k8s.io/api/resource/v1.ResourceClaim":                                                                  schema_k8sio_api_resource_v1_ResourceClaim(ref),
 		"k8s.io/api/resource/v1.ResourceClaimConsumerReference":                                                 schema_k8sio_api_resource_v1_ResourceClaimConsumerReference(ref),
@@ -49475,6 +49476,60 @@ func schema_k8sio_api_resource_v1_NetworkDeviceData(ref common.ReferenceCallback
 	}
 }
 
+func schema_k8sio_api_resource_v1_NodeTopologyInfo(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NodeTopologyInfo describes NUMA topology for resources in a ResourceSlice. This enables topology-aware resource allocation and placement decisions.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"nodeId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeID identifies the NUMA node that provides the resources. This should correspond to the NUMA node ID as reported by the kernel.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"resources": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Resources contains the available resource quantities per NUMA node. The key is the resource name (e.g., \"hugepages-2Mi\", \"memory\"), and the value is the available quantity.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: 0,
+										Type:    []string{"integer"},
+										Format:  "int64",
+									},
+								},
+							},
+						},
+					},
+					"properties": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Properties contains NUMA-specific properties for the resources. Examples include memory bandwidth, cache size, or other NUMA characteristics.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"nodeId", "resources"},
+			},
+		},
+	}
+}
+
 func schema_k8sio_api_resource_v1_OpaqueDeviceConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -50089,12 +50144,18 @@ func schema_k8sio_api_resource_v1_ResourceSliceSpec(ref common.ReferenceCallback
 							},
 						},
 					},
+					"nodeTopology": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NodeTopology describes NUMA topology information for resources in this pool. This field enables topology-aware resource allocation and placement decisions.",
+							Ref:         ref("k8s.io/api/resource/v1.NodeTopologyInfo"),
+						},
+					},
 				},
 				Required: []string{"driver", "pool"},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/api/core/v1.NodeSelector", "k8s.io/api/resource/v1.CounterSet", "k8s.io/api/resource/v1.Device", "k8s.io/api/resource/v1.ResourcePool"},
+			"k8s.io/api/core/v1.NodeSelector", "k8s.io/api/resource/v1.CounterSet", "k8s.io/api/resource/v1.Device", "k8s.io/api/resource/v1.NodeTopologyInfo", "k8s.io/api/resource/v1.ResourcePool"},
 	}
 }
 

@@ -318,6 +318,11 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 			return nil, err
 		}
 		metrics.RegisterCollectors(cm.draManager.NewMetricsCollector())
+
+		// Register DRA manager as a HintProvider for topology-aware resource allocation
+		if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.DRATopologyManager) {
+			cm.topologyManager.AddHintProvider(cm.draManager)
+		}
 	}
 	cm.kubeClient = kubeClient
 

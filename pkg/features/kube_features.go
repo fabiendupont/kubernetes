@@ -301,6 +301,13 @@ const (
 	// based on "structured parameters".
 	DynamicResourceAllocation featuregate.Feature = "DynamicResourceAllocation"
 
+	// owner: @fabien-dupont
+	// kep: http://kep.k8s.io/10001
+	//
+	// Enable DRA Manager to integrate with Topology Manager via HintProvider interface.
+	// This allows DRA resources to participate in topology-aware resource allocation.
+	DRATopologyManager featuregate.Feature = "DRATopologyManager"
+
 	// owner: @HirazawaUi
 	// kep: http://kep.k8s.io/3721
 	//
@@ -1243,6 +1250,11 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 		{Version: version.MustParse("1.26"), Default: false, PreRelease: featuregate.Alpha},
 		{Version: version.MustParse("1.32"), Default: false, PreRelease: featuregate.Beta},
 		{Version: version.MustParse("1.34"), Default: true, PreRelease: featuregate.GA}, // lock to default in 1.35
+	},
+	DRATopologyManager: {
+		{Version: version.MustParse("1.34"), Default: false, PreRelease: featuregate.Alpha},
+		{Version: version.MustParse("1.36"), Default: false, PreRelease: featuregate.Beta},
+		{Version: version.MustParse("1.38"), Default: true, PreRelease: featuregate.GA}, // lock to default in 1.39
 	},
 	EnvFiles: {
 		{Version: version.MustParse("1.34"), Default: false, PreRelease: featuregate.Alpha},
