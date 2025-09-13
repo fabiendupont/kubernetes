@@ -63,11 +63,36 @@ func (p *singleNumaNodePolicy) Merge(providersHints []map[string][]TopologyHint)
 	// Filter to only include don't cares and hints with a single NUMA node.
 	singleNumaHints := filterSingleNumaHints(filteredHints)
 
-	merger := NewHintMerger(p.numaInfo, singleNumaHints, p.Name(), p.opts)
-	bestHint := merger.Merge()
+	var bestHint TopologyHint
+	if EnhancedTopologyHintsEnabled() {
+		// Use enhanced merger when feature is enabled, but only with single NUMA hints
+		// Create filtered providers hints for single NUMA
+		singleNumaProvidersHints := make([]map[string][]TopologyHint, len(providersHints))
+		for i, providerHints := range providersHints {
+			singleNumaProvidersHints[i] = make(map[string][]TopologyHint)
+			for resource, hints := range providerHints {
+				var filteredHints []TopologyHint
+				for _, hint := range hints {
+					// Only include single NUMA hints or don't care hints
+					if hint.NUMANodeAffinity == nil || hint.NUMANodeAffinity.Count() <= 1 {
+						filteredHints = append(filteredHints, hint)
+					}
+				}
+				if len(filteredHints) > 0 {
+					singleNumaProvidersHints[i][resource] = filteredHints
+				}
+			}
+		}
+		enhancedMerger := NewEnhancedHintMerger(p.numaInfo, p.numaInfo.DefaultAffinityMask(), singleNumaProvidersHints)
+		bestHint = enhancedMerger.Merge()
+	} else {
+		// Use traditional merger for backward compatibility
+		merger := NewHintMerger(p.numaInfo, singleNumaHints, p.Name(), p.opts)
+		bestHint = merger.Merge()
+	}
 
 	if bestHint.NUMANodeAffinity.IsEqual(p.numaInfo.DefaultAffinityMask()) {
-		bestHint = TopologyHint{nil, bestHint.Preferred}
+		bestHint = TopologyHint{NUMANodeAffinity: nil, Preferred: bestHint.Preferred}
 	}
 
 	admit := p.canAdmitPodResult(&bestHint)

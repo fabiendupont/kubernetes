@@ -165,8 +165,9 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration, featur
 	case kubeletconfig.BestEffortTopologyManagerPolicy:
 	case kubeletconfig.RestrictedTopologyManagerPolicy:
 	case kubeletconfig.SingleNumaNodeTopologyManagerPolicy:
+	case kubeletconfig.DistributedTopologyManagerPolicy:
 	default:
-		allErrors = append(allErrors, fmt.Errorf("invalid configuration: topologyManagerPolicy (--topology-manager-policy) %q must be one of: %q", kc.TopologyManagerPolicy, []string{kubeletconfig.NoneTopologyManagerPolicy, kubeletconfig.BestEffortTopologyManagerPolicy, kubeletconfig.RestrictedTopologyManagerPolicy, kubeletconfig.SingleNumaNodeTopologyManagerPolicy}))
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: topologyManagerPolicy (--topology-manager-policy) %q must be one of: %q", kc.TopologyManagerPolicy, []string{kubeletconfig.NoneTopologyManagerPolicy, kubeletconfig.BestEffortTopologyManagerPolicy, kubeletconfig.RestrictedTopologyManagerPolicy, kubeletconfig.SingleNumaNodeTopologyManagerPolicy, kubeletconfig.DistributedTopologyManagerPolicy}))
 	}
 
 	switch kc.TopologyManagerScope {

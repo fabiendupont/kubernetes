@@ -207,6 +207,75 @@ type NodeTopologyInfo struct {
 	//
 	// +optional
 	Properties map[string]string `json:"properties,omitempty" protobuf:"bytes,3,opt,name=properties"`
+	
+	// InterconnectInfo describes interconnect characteristics for enhanced topology-aware
+	// resource placement decisions. This provides metrics like hop count, bandwidth,
+	// and distances for sophisticated NUMA locality optimization.
+	//
+	// +optional
+	// +featureGate=EnhancedTopologyHints
+	InterconnectInfo *InterconnectInfo `json:"interconnectInfo,omitempty" protobuf:"bytes,4,opt,name=interconnectInfo"`
+}
+
+// InterconnectInfo describes interconnect characteristics for a NUMA node.
+// This information enables enhanced topology-aware resource placement decisions
+// by providing detailed metrics about interconnect performance and topology.
+//
+// +featureGate=EnhancedTopologyHints
+type InterconnectInfo struct {
+	// HopCount indicates the number of hops required to reach this NUMA node
+	// from the requesting node. Lower values indicate better locality.
+	// 0 indicates local access, 1 indicates one hop (adjacent), etc.
+	//
+	// +optional
+	HopCount *int32 `json:"hopCount,omitempty" protobuf:"varint,1,opt,name=hopCount"`
+	
+	// Bandwidth indicates the interconnect bandwidth in GB/s to this NUMA node.
+	// Higher values indicate better performance for bandwidth-sensitive workloads.
+	//
+	// +optional
+	Bandwidth *float64 `json:"bandwidth,omitempty" protobuf:"bytes,2,opt,name=bandwidth"`
+	
+	// Distance indicates the NUMA distance matrix value following Linux kernel
+	// conventions (10=local, 20=1-hop, 30=2-hop, etc.). Lower values indicate
+	// better locality and performance.
+	//
+	// +optional
+	Distance *int32 `json:"distance,omitempty" protobuf:"varint,3,opt,name=distance"`
+	
+	// Latency indicates the interconnect latency in nanoseconds to this NUMA node.
+	// Lower values indicate better performance for latency-sensitive workloads.
+	//
+	// +optional
+	Latency *int32 `json:"latency,omitempty" protobuf:"varint,4,opt,name=latency"`
+	
+	// ConnectivityMatrix describes the connectivity to other NUMA nodes.
+	// The key is the target NUMA node ID, and the value describes the
+	// connection characteristics (bandwidth, latency, etc.).
+	//
+	// +optional
+	ConnectivityMatrix map[string]NodeConnectivity `json:"connectivityMatrix,omitempty" protobuf:"bytes,5,opt,name=connectivityMatrix"`
+}
+
+// NodeConnectivity describes the connection characteristics between two NUMA nodes.
+//
+// +featureGate=EnhancedTopologyHints
+type NodeConnectivity struct {
+	// Bandwidth indicates the bandwidth in GB/s between the nodes.
+	//
+	// +optional
+	Bandwidth *float64 `json:"bandwidth,omitempty" protobuf:"bytes,1,opt,name=bandwidth"`
+	
+	// Latency indicates the latency in nanoseconds between the nodes.
+	//
+	// +optional
+	Latency *int32 `json:"latency,omitempty" protobuf:"varint,2,opt,name=latency"`
+	
+	// Cost indicates a relative cost metric for using this connection.
+	// Higher values indicate more expensive (less preferred) connections.
+	//
+	// +optional
+	Cost *float64 `json:"cost,omitempty" protobuf:"bytes,3,opt,name=cost"`
 }
 
 // CounterSet defines a named set of counters

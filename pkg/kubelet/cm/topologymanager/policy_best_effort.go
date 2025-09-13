@@ -42,8 +42,18 @@ func (p *bestEffortPolicy) canAdmitPodResult(hint *TopologyHint) bool {
 
 func (p *bestEffortPolicy) Merge(providersHints []map[string][]TopologyHint) (TopologyHint, bool) {
 	filteredHints := filterProvidersHints(providersHints)
-	merger := NewHintMerger(p.numaInfo, filteredHints, p.Name(), p.opts)
-	bestHint := merger.Merge()
+	
+	var bestHint TopologyHint
+	if EnhancedTopologyHintsEnabled() {
+		// Use enhanced merger when feature is enabled
+		enhancedMerger := NewEnhancedHintMerger(p.numaInfo, p.numaInfo.DefaultAffinityMask(), providersHints)
+		bestHint = enhancedMerger.Merge()
+	} else {
+		// Use traditional merger for backward compatibility
+		merger := NewHintMerger(p.numaInfo, filteredHints, p.Name(), p.opts)
+		bestHint = merger.Merge()
+	}
+	
 	admit := p.canAdmitPodResult(&bestHint)
 	return bestHint, admit
 }

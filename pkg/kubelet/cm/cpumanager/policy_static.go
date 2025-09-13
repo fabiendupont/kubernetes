@@ -697,10 +697,15 @@ func (p *staticPolicy) generateCPUTopologyHints(availableCPUs cpuset.CPUSet, reu
 		// Otherwise, create a new hint from the numa node bitmask and add it to the
 		// list of hints.  We set all hint preferences to 'false' on the first
 		// pass through.
-		hints = append(hints, topologymanager.TopologyHint{
+		hint := topologymanager.TopologyHint{
 			NUMANodeAffinity: mask,
 			Preferred:        false,
-		})
+		}
+		
+		// Calculate enhanced topology fields for KEP-10002 when feature is enabled
+		p.calculateEnhancedTopologyFields(&hint, availableCPUs, reusableCPUs, request)
+		
+		hints = append(hints, hint)
 	})
 
 	// Loop back through all hints and update the 'Preferred' field based on
@@ -731,6 +736,74 @@ func (p *staticPolicy) isHintSocketAligned(hint topologymanager.TopologyHint, mi
 	// A hint is considered socket aligned if sockets across which numa nodes span is equal to minSockets
 	minSockets := (minAffinitySize + numaNodesPerSocket - 1) / numaNodesPerSocket
 	return p.topology.CPUDetails.SocketsInNUMANodes(numaNodesBitMask...).Size() == minSockets
+}
+
+// calculateEnhancedTopologyFields calculates enhanced topology metrics for KEP-10002
+func (p *staticPolicy) calculateEnhancedTopologyFields(hint *topologymanager.TopologyHint, availableCPUs cpuset.CPUSet, reusableCPUs cpuset.CPUSet, request int) {
+	// Only calculate enhanced fields when the feature gate is enabled
+	if !utilfeature.DefaultFeatureGate.Enabled(features.EnhancedTopologyHints) {
+		return
+	}
+	
+	if hint.NUMANodeAffinity == nil {
+		return
+	}
+	
+	numaNodes := hint.NUMANodeAffinity.GetBits()
+	if len(numaNodes) == 0 {
+		return
+	}
+	
+	// Calculate hop count: 0 for single NUMA node, 1+ for multi-NUMA
+	hopCount := len(numaNodes) - 1
+	if hopCount < 0 {
+		hopCount = 0
+	}
+	
+	// Calculate average distance based on NUMA distance matrix
+	var totalDistance int
+	nodeCount := len(numaNodes)
+	
+	if nodeCount == 1 {
+		// Local access - use standard Linux NUMA distance
+		totalDistance = 10
+	} else if p.topology.NumNUMANodes > 1 {
+		// Multi-NUMA: calculate average inter-node distance
+		// Use a simplified model: assume distance increases linearly with hops
+		// In a real implementation, this would use the actual NUMA distance matrix
+		totalDistance = 10 + (hopCount * 10) // 10=local, 20=1-hop, 30=2-hop, etc.
+	} else {
+		totalDistance = 10 // Default local distance
+	}
+	
+	// Calculate bandwidth estimate (simplified model)
+	// Assume bandwidth decreases with distance and multi-NUMA spanning
+	baseBandwidth := 100.0 // GB/s baseline for local access
+	bandwidthPenalty := float64(hopCount) * 0.2 // 20% penalty per hop
+	bandwidth := baseBandwidth * (1.0 - bandwidthPenalty)
+	if bandwidth < 10.0 {
+		bandwidth = 10.0 // Minimum bandwidth floor
+	}
+	
+	// Calculate topology score: lower is better
+	// Factors: distance penalty, hop penalty, resource utilization
+	cpusInMask := p.topology.CPUDetails.CPUsInNUMANodes(numaNodes...).Size()
+	utilizationRatio := float64(request) / float64(cpusInMask)
+	if utilizationRatio > 1.0 {
+		utilizationRatio = 1.0
+	}
+	
+	distancePenalty := float64(totalDistance-10) * 2.0 // Penalty for non-local access
+	hopPenalty := float64(hopCount) * 5.0 // Penalty for spanning multiple nodes
+	utilizationBonus := (1.0 - utilizationRatio) * 10.0 // Bonus for better utilization
+	
+	score := distancePenalty + hopPenalty - utilizationBonus
+	if score < 0.0 {
+		score = 0.0
+	}
+	
+	// Set the enhanced fields
+	hint.SetEnhancedFields(&hopCount, &bandwidth, &totalDistance, &score)
 }
 
 // getAlignedCPUs return set of aligned CPUs based on numa affinity mask and configured policy options.

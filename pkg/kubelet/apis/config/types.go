@@ -68,6 +68,9 @@ const (
 	// SingleNumaNodeTopologyManagerPolicy is a mode in which kubelet only allows
 	// pods with a single NUMA alignment of CPU and device resources.
 	SingleNumaNodeTopologyManagerPolicy = "single-numa-node"
+	// DistributedTopologyManagerPolicy is a mode in which kubelet distributes
+	// resources across multiple NUMA nodes for better performance and scalability.
+	DistributedTopologyManagerPolicy = "distributed"
 	// ContainerTopologyManagerScope represents that
 	// topology policy is applied on a per-container basis.
 	ContainerTopologyManagerScope = "container"

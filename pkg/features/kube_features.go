@@ -308,6 +308,14 @@ const (
 	// This allows DRA resources to participate in topology-aware resource allocation.
 	DRATopologyManager featuregate.Feature = "DRATopologyManager"
 
+	// owner: @fabiendupont
+	// kep: http://kep.k8s.io/10002
+	//
+	// Enable enhanced topology hints with hop count, bandwidth, and distance metrics
+	// for all HintProviders. This provides more sophisticated resource placement decisions
+	// based on interconnect characteristics and enables new topology policies.
+	EnhancedTopologyHints featuregate.Feature = "EnhancedTopologyHints"
+
 	// owner: @HirazawaUi
 	// kep: http://kep.k8s.io/3721
 	//
@@ -1255,6 +1263,11 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 		{Version: version.MustParse("1.34"), Default: false, PreRelease: featuregate.Alpha},
 		{Version: version.MustParse("1.36"), Default: false, PreRelease: featuregate.Beta},
 		{Version: version.MustParse("1.38"), Default: true, PreRelease: featuregate.GA}, // lock to default in 1.39
+	},
+	EnhancedTopologyHints: {
+		{Version: version.MustParse("1.35"), Default: false, PreRelease: featuregate.Alpha},
+		{Version: version.MustParse("1.38"), Default: false, PreRelease: featuregate.Beta},
+		{Version: version.MustParse("1.40"), Default: true, PreRelease: featuregate.GA}, // lock to default in 1.41
 	},
 	EnvFiles: {
 		{Version: version.MustParse("1.34"), Default: false, PreRelease: featuregate.Alpha},

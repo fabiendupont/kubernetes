@@ -1147,14 +1147,145 @@ func (m *Manager) createTopologyHintFromResourceSlice(slice resourceapi.Resource
 	}
 
 	// Check if the resource is available on this NUMA node
-	if quantity, exists := slice.Spec.NodeTopology.Resources[resourceName]; exists && quantity > 0 {
-		return &topologymanager.TopologyHint{
-			NUMANodeAffinity: bitmask,
-			Preferred:        true, // Mark as preferred if resource is available
-		}
+	quantity, exists := slice.Spec.NodeTopology.Resources[resourceName]
+	if !exists || quantity <= 0 {
+		return nil
 	}
 
-	return nil
+	// Create basic topology hint
+	hint := &topologymanager.TopologyHint{
+		NUMANodeAffinity: bitmask,
+		Preferred:        true, // Mark as preferred if resource is available
+	}
+
+	// Add enhanced topology information if feature gate is enabled
+	if topologymanager.EnhancedTopologyHintsEnabled() {
+		m.enhanceTopologyHint(hint, slice, resourceName, quantity)
+	}
+
+	return hint
+}
+
+// enhanceTopologyHint adds enhanced topology information to a hint when the feature gate is enabled
+func (m *Manager) enhanceTopologyHint(hint *topologymanager.TopologyHint, slice resourceapi.ResourceSlice, resourceName string, quantity int64) {
+	var hopCount int
+	var distance int
+	var bandwidth float64
+	
+	// Use InterconnectInfo from ResourceSlice if available, otherwise fall back to calculation
+	if slice.Spec.NodeTopology.InterconnectInfo != nil {
+		interconnect := slice.Spec.NodeTopology.InterconnectInfo
+		
+		// Use provided hop count or calculate it
+		if interconnect.HopCount != nil {
+			hopCount = int(*interconnect.HopCount)
+		} else {
+			hopCount = m.calculateHopCount(slice.Spec.NodeTopology.NodeID)
+		}
+		
+		// Use provided distance or calculate it
+		if interconnect.Distance != nil {
+			distance = int(*interconnect.Distance)
+		} else {
+			distance = m.calculateNUMADistance(slice.Spec.NodeTopology.NodeID)
+		}
+		
+		// Use provided bandwidth or estimate it
+		if interconnect.Bandwidth != nil {
+			bandwidth = *interconnect.Bandwidth
+		} else {
+			bandwidth = m.estimateBandwidth(resourceName, slice.Spec.NodeTopology.NodeID)
+		}
+		
+		klog.V(5).InfoS("Using InterconnectInfo from ResourceSlice", 
+			"resource", resourceName,
+			"numaNode", slice.Spec.NodeTopology.NodeID,
+			"providedHopCount", interconnect.HopCount,
+			"providedDistance", interconnect.Distance,
+			"providedBandwidth", interconnect.Bandwidth)
+	} else {
+		// Fall back to calculation when InterconnectInfo is not available
+		hopCount = m.calculateHopCount(slice.Spec.NodeTopology.NodeID)
+		distance = m.calculateNUMADistance(slice.Spec.NodeTopology.NodeID)
+		bandwidth = m.estimateBandwidth(resourceName, slice.Spec.NodeTopology.NodeID)
+		
+		klog.V(5).InfoS("InterconnectInfo not available, using calculated values", 
+			"resource", resourceName,
+			"numaNode", slice.Spec.NodeTopology.NodeID)
+	}
+	
+	// Calculate score using the enhanced scoring formula
+	dataSize := quantity * 1024 * 1024 // Rough estimate: quantity in MB
+	score := topologymanager.CalculateTopologyScore(hopCount, bandwidth, distance, dataSize)
+	
+	// Set enhanced fields on the hint
+	hint.SetEnhancedFields(&hopCount, &bandwidth, &distance, &score)
+	
+	klog.V(5).InfoS("Enhanced topology hint created", 
+		"resource", resourceName,
+		"numaNode", slice.Spec.NodeTopology.NodeID,
+		"hopCount", hopCount,
+		"bandwidth", bandwidth,
+		"distance", distance,
+		"score", score)
+}
+
+// calculateHopCount calculates the hop count for reaching a NUMA node
+func (m *Manager) calculateHopCount(nodeID int32) int {
+	// Simple implementation - could be enhanced with actual topology discovery
+	// For now, assume local node = 0 hops, adjacent nodes = 1 hop, distant nodes = 2 hops
+	
+	// This is a placeholder implementation
+	// In a real system, you would use hwloc or similar to determine actual hop counts
+	if nodeID == 0 {
+		return 0 // Local NUMA node
+	} else if nodeID <= 2 {
+		return 1 // Adjacent NUMA nodes
+	} else {
+		return 2 // Distant NUMA nodes
+	}
+}
+
+// calculateNUMADistance calculates NUMA distance matrix value
+func (m *Manager) calculateNUMADistance(nodeID int32) int {
+	// Follow Linux kernel NUMA distance matrix convention
+	// 10 = local, 20 = 1-hop, 30 = 2-hop, etc.
+	
+	hopCount := m.calculateHopCount(nodeID)
+	return 10 + (hopCount * 10)
+}
+
+// estimateBandwidth estimates interconnect bandwidth based on resource type and NUMA topology
+func (m *Manager) estimateBandwidth(resourceName string, nodeID int32) float64 {
+	// This is a simplified estimation - in practice, you would use hardware discovery
+	// Different resource types and interconnects have different bandwidth characteristics
+	
+	var baseBandwidth float64
+	
+	// Estimate bandwidth based on resource type
+	if strings.Contains(resourceName, "gpu") {
+		// GPU interconnects typically have high bandwidth
+		baseBandwidth = 300.0 // GB/s for high-end GPU interconnects like NVLink
+	} else if strings.Contains(resourceName, "network") {
+		// Network devices typically have moderate bandwidth
+		baseBandwidth = 100.0 // GB/s for high-speed network interconnects
+	} else {
+		// Other devices - conservative estimate
+		baseBandwidth = 32.0 // GB/s for PCIe Gen4 x16
+	}
+	
+	// Adjust bandwidth based on NUMA distance
+	hopCount := m.calculateHopCount(nodeID)
+	switch hopCount {
+	case 0:
+		return baseBandwidth // Local access - full bandwidth
+	case 1:
+		return baseBandwidth * 0.8 // 1-hop - 80% bandwidth
+	case 2:
+		return baseBandwidth * 0.6 // 2-hop - 60% bandwidth
+	default:
+		return baseBandwidth * 0.4 // 3+ hops - 40% bandwidth
+	}
 }
 
 // mergeTopologyHints merges topology hints from multiple sources.

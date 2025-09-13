@@ -325,7 +325,7 @@ func TestValidateKubeletConfiguration(t *testing.T) {
 			conf.TopologyManagerPolicy = "invalid-policy"
 			return conf
 		},
-		errMsg: "invalid configuration: topologyManagerPolicy (--topology-manager-policy) \"invalid-policy\" must be one of: [\"none\" \"best-effort\" \"restricted\" \"single-numa-node\"]",
+		errMsg: "invalid configuration: topologyManagerPolicy (--topology-manager-policy) \"invalid-policy\" must be one of: [\"none\" \"best-effort\" \"restricted\" \"single-numa-node\" \"distributed\"]",
 	}, {
 		name: "invalid TopologyManagerScope",
 		configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {

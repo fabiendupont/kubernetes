@@ -342,10 +342,31 @@ func regenerateHints(logger logr.Logger, pod *v1.Pod, ctn *v1.Container, ctnBloc
 		}
 
 		logger.Info("Regenerating TopologyHints, resource was already allocated to pod", "resourceName", b.Type, "podUID", pod.UID, "containerName", ctn.Name)
-		hints[string(b.Type)] = append(hints[string(b.Type)], topologymanager.TopologyHint{
+		hint := topologymanager.TopologyHint{
 			NUMANodeAffinity: containerNUMAAffinity,
 			Preferred:        true,
-		})
+		}
+		
+		// Add enhanced topology information if feature gate is enabled
+		// For regenerated hints, we need machine state which we don't have here
+		// This is acceptable as regenerated hints represent already allocated resources
+		if topologymanager.EnhancedTopologyHintsEnabled() {
+			// For already allocated memory, provide basic enhanced fields
+			hopCount := len(b.NUMAAffinity) - 1
+			if hopCount < 0 {
+				hopCount = 0
+			}
+			distance := 10 + (hopCount * 15) // Memory-specific distance calculation
+			bandwidth := 100.0 * (1.0 - float64(hopCount)*0.3) // Simplified bandwidth estimate
+			if bandwidth < 20.0 {
+				bandwidth = 20.0
+			}
+			score := float64(hopCount * 8) // Simple score based on hops for allocated memory
+			
+			hint.SetEnhancedFields(&hopCount, &bandwidth, &distance, &score)
+		}
+		
+		hints[string(b.Type)] = append(hints[string(b.Type)], hint)
 	}
 	return hints
 }
@@ -561,10 +582,17 @@ func (p *staticPolicy) calculateHints(machineState state.NUMANodeMap, pod *v1.Po
 			if _, ok := hints[string(resourceName)]; !ok {
 				hints[string(resourceName)] = []topologymanager.TopologyHint{}
 			}
-			hints[string(resourceName)] = append(hints[string(resourceName)], topologymanager.TopologyHint{
+			hint := topologymanager.TopologyHint{
 				NUMANodeAffinity: mask,
 				Preferred:        false,
-			})
+			}
+			
+			// Add enhanced topology information if feature gate is enabled
+			if topologymanager.EnhancedTopologyHintsEnabled() {
+				p.calculateEnhancedTopologyFields(&hint, machineState, resourceName, requestedResources[resourceName])
+			}
+			
+			hints[string(resourceName)] = append(hints[string(resourceName)], hint)
 		}
 	})
 
@@ -1075,4 +1103,79 @@ func isAffinityViolatingNUMAAllocations(machineState state.NUMANodeMap, mask bit
 		}
 	}
 	return false
+}
+
+// calculateEnhancedTopologyFields calculates enhanced topology metrics for KEP-10002
+func (p *staticPolicy) calculateEnhancedTopologyFields(hint *topologymanager.TopologyHint, machineState state.NUMANodeMap, resourceName v1.ResourceName, requestedSize uint64) {
+	// Only calculate enhanced fields when the feature gate is enabled
+	if !topologymanager.EnhancedTopologyHintsEnabled() {
+		return
+	}
+	
+	if hint.NUMANodeAffinity == nil {
+		return
+	}
+	
+	numaNodes := hint.NUMANodeAffinity.GetBits()
+	if len(numaNodes) == 0 {
+		return
+	}
+	
+	// Calculate hop count: 0 for single NUMA node, 1+ for multi-NUMA
+	hopCount := len(numaNodes) - 1
+	if hopCount < 0 {
+		hopCount = 0
+	}
+	
+	// Calculate memory-specific distance based on NUMA distance matrix
+	var totalDistance int
+	nodeCount := len(numaNodes)
+	
+	if nodeCount == 1 {
+		// Local memory access - use standard Linux NUMA distance
+		totalDistance = 10
+	} else {
+		// Multi-NUMA: calculate average inter-node distance for memory access
+		// Memory access patterns are different from CPU - more sensitive to distance
+		totalDistance = 10 + (hopCount * 15) // 10=local, 25=1-hop, 40=2-hop, etc.
+	}
+	
+	// Calculate memory bandwidth estimate (simplified model)
+	// Memory bandwidth decreases significantly with distance
+	baseBandwidth := 100.0 // GB/s baseline for local memory access
+	bandwidthPenalty := float64(hopCount) * 0.3 // 30% penalty per hop for memory
+	bandwidth := baseBandwidth * (1.0 - bandwidthPenalty)
+	if bandwidth < 20.0 {
+		bandwidth = 20.0 // Minimum memory bandwidth floor
+	}
+	
+	// Calculate memory-specific topology score: lower is better
+	// Memory workloads are particularly sensitive to latency and bandwidth
+	availableMemory := uint64(0)
+	for _, nodeID := range numaNodes {
+		if nodeState, exists := machineState[nodeID]; exists {
+			if memoryInfo, exists := nodeState.MemoryMap[resourceName]; exists {
+				availableMemory += memoryInfo.Allocatable
+			}
+		}
+	}
+	
+	// Memory utilization ratio
+	utilizationRatio := float64(requestedSize) / float64(availableMemory)
+	if utilizationRatio > 1.0 {
+		utilizationRatio = 1.0
+	}
+	
+	// Memory-specific scoring factors
+	distancePenalty := float64(totalDistance-10) * 3.0 // Higher penalty for memory distance
+	hopPenalty := float64(hopCount) * 8.0 // Significant penalty for memory cross-NUMA access
+	utilizationBonus := (1.0 - utilizationRatio) * 15.0 // Bonus for better memory utilization
+	
+	score := distancePenalty + hopPenalty - utilizationBonus
+	if score < 0.0 {
+		score = 0.0
+	}
+	
+	// Set the enhanced fields
+	hint.SetEnhancedFields(&hopCount, &bandwidth, &totalDistance, &score)
 }

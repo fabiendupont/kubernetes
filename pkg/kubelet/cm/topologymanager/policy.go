@@ -65,8 +65,176 @@ func mergePermutation(defaultAffinity bitmask.BitMask, permutation []TopologyHin
 	mergedAffinity := bitmask.And(defaultAffinity, numaAffinities...)
 	// Build a mergedHint from the merged affinity mask, setting preferred as
 	// appropriate based on the logic above.
-	return TopologyHint{mergedAffinity, preferred}
+	return TopologyHint{NUMANodeAffinity: mergedAffinity, Preferred: preferred}
 }
+
+// mergePermutationEnhanced extends mergePermutation to handle enhanced topology hints
+// when the EnhancedTopologyHints feature gate is enabled
+func mergePermutationEnhanced(defaultAffinity bitmask.BitMask, permutation []TopologyHint) TopologyHint {
+	// Start with traditional merging
+	mergedHint := mergePermutation(defaultAffinity, permutation)
+	
+	// If enhanced topology hints are not enabled, return traditional result
+	if !EnhancedTopologyHintsEnabled() {
+		return mergedHint
+	}
+	
+	// Enhance the merged hint with aggregated enhanced fields
+	var (
+		totalHopCount     = 0
+		totalBandwidth    = 0.0
+		totalDistance     = 0
+		totalScore        = 0.0
+		enhancedHintCount = 0
+	)
+	
+	// Aggregate enhanced fields from all hints in the permutation
+	for _, hint := range permutation {
+		if hint.hasEnhancedFields() {
+			enhancedHintCount++
+			totalHopCount += hint.GetHopCount()
+			totalBandwidth += hint.GetBandwidth()
+			totalDistance += hint.GetDistance()
+			totalScore += hint.GetScore()
+		}
+	}
+	
+	// If we have enhanced hints, calculate averaged/aggregated values
+	if enhancedHintCount > 0 {
+		// Use maximum hop count and distance (worst case)
+		maxHopCount := 0
+		maxDistance := 10  // Default to local
+		minBandwidth := float64(^uint64(0) >> 1)  // Start with max float64
+		
+		for _, hint := range permutation {
+			if hint.hasEnhancedFields() {
+				if hopCount := hint.GetHopCount(); hopCount > maxHopCount {
+					maxHopCount = hopCount
+				}
+				if distance := hint.GetDistance(); distance > maxDistance {
+					maxDistance = distance
+				}
+				if bandwidth := hint.GetBandwidth(); bandwidth > 0 && bandwidth < minBandwidth {
+					minBandwidth = bandwidth
+				}
+			}
+		}
+		
+		// Set enhanced fields on merged hint
+		mergedHint.HopCount = &maxHopCount
+		mergedHint.Distance = &maxDistance
+		
+		// Use minimum bandwidth (bottleneck)
+		if minBandwidth < float64(^uint64(0) >> 1) {
+			mergedHint.Bandwidth = &minBandwidth
+		}
+		
+		// Use average score
+		avgScore := totalScore / float64(enhancedHintCount)
+		mergedHint.Score = &avgScore
+	}
+	
+	return mergedHint
+}
+
+// EnhancedHintMerger provides enhanced hint merging capabilities for topology policies
+type EnhancedHintMerger struct {
+	numaInfo         *NUMAInfo
+	defaultAffinity bitmask.BitMask
+	allProviderHints [][]TopologyHint
+	// Optional policy-specific configuration
+	useDistributedMerging bool
+	preferenceWeight      float64
+}
+
+// NewEnhancedHintMerger creates a new enhanced hint merger
+func NewEnhancedHintMerger(numaInfo *NUMAInfo, defaultAffinity bitmask.BitMask, providersHints []map[string][]TopologyHint) *EnhancedHintMerger {
+	return &EnhancedHintMerger{
+		numaInfo:              numaInfo,
+		defaultAffinity:       defaultAffinity,
+		allProviderHints:      filterProvidersHints(providersHints),
+		useDistributedMerging: false,
+		preferenceWeight:      1.0,
+	}
+}
+
+// SetDistributedMerging enables distributed merging for the distributed policy
+func (m *EnhancedHintMerger) SetDistributedMerging(enabled bool) {
+	m.useDistributedMerging = enabled
+}
+
+// SetPreferenceWeight sets the weight for preference in hint comparison
+func (m *EnhancedHintMerger) SetPreferenceWeight(weight float64) {
+	m.preferenceWeight = weight
+}
+
+// Merge finds the best topology hint by considering enhanced metrics when available
+func (m *EnhancedHintMerger) Merge() TopologyHint {
+	// If no hints, return default hint
+	if len(m.allProviderHints) == 0 {
+		return TopologyHint{NUMANodeAffinity: m.defaultAffinity, Preferred: false}
+	}
+	
+	// Use existing Kubernetes hint merger as base for compatibility
+	merger := NewHintMerger(m.numaInfo, m.allProviderHints, "enhanced", PolicyOptions{})
+	baseHint := merger.Merge()
+	
+	// If enhanced topology hints are not enabled, return base result
+	if !EnhancedTopologyHintsEnabled() {
+		return baseHint
+	}
+	
+	// Enhance the base hint with aggregated enhanced fields from all provider hints
+	return m.enhanceHint(baseHint)
+}
+
+// enhanceHint adds enhanced topology information to a base hint
+func (m *EnhancedHintMerger) enhanceHint(baseHint TopologyHint) TopologyHint {
+	var (
+		maxHopCount   = 0
+		maxDistance   = 10  // Default to local
+		minBandwidth  = float64(^uint64(0) >> 1)  // Start with max float64
+		totalScore    = 0.0
+		enhancedCount = 0
+	)
+	
+	// Aggregate enhanced fields from all provider hints
+	for _, providerHints := range m.allProviderHints {
+		for _, hint := range providerHints {
+			if hint.hasEnhancedFields() {
+				enhancedCount++
+				if hopCount := hint.GetHopCount(); hopCount > maxHopCount {
+					maxHopCount = hopCount
+				}
+				if distance := hint.GetDistance(); distance > maxDistance {
+					maxDistance = distance
+				}
+				if bandwidth := hint.GetBandwidth(); bandwidth > 0 && bandwidth < minBandwidth {
+					minBandwidth = bandwidth
+				}
+				totalScore += hint.GetScore()
+			}
+		}
+	}
+	
+	// If we have enhanced hints, set enhanced fields on the base hint
+	if enhancedCount > 0 {
+		baseHint.HopCount = &maxHopCount
+		baseHint.Distance = &maxDistance
+		
+		// Use minimum bandwidth (bottleneck)
+		if minBandwidth < float64(^uint64(0) >> 1) {
+			baseHint.Bandwidth = &minBandwidth
+		}
+		
+		// Use average score
+		avgScore := totalScore / float64(enhancedCount)
+		baseHint.Score = &avgScore
+	}
+	
+	return baseHint
+}
+
 
 func filterProvidersHints(providersHints []map[string][]TopologyHint) [][]TopologyHint {
 	// Loop through all hint providers and save an accumulated list of the
@@ -77,7 +245,7 @@ func filterProvidersHints(providersHints []map[string][]TopologyHint) [][]Topolo
 		// If hints is nil, insert a single, preferred any-numa hint into allProviderHints.
 		if len(hints) == 0 {
 			klog.InfoS("Hint Provider has no preference for NUMA affinity with any resource")
-			allProviderHints = append(allProviderHints, []TopologyHint{{nil, true}})
+			allProviderHints = append(allProviderHints, []TopologyHint{{NUMANodeAffinity: nil, Preferred: true}})
 			continue
 		}
 
@@ -85,13 +253,13 @@ func filterProvidersHints(providersHints []map[string][]TopologyHint) [][]Topolo
 		for resource := range hints {
 			if hints[resource] == nil {
 				klog.InfoS("Hint Provider has no preference for NUMA affinity with resource", "resource", resource)
-				allProviderHints = append(allProviderHints, []TopologyHint{{nil, true}})
+				allProviderHints = append(allProviderHints, []TopologyHint{{NUMANodeAffinity: nil, Preferred: true}})
 				continue
 			}
 
 			if len(hints[resource]) == 0 {
 				klog.InfoS("Hint Provider has no possible NUMA affinities for resource", "resource", resource)
-				allProviderHints = append(allProviderHints, []TopologyHint{{nil, false}})
+				allProviderHints = append(allProviderHints, []TopologyHint{{NUMANodeAffinity: nil, Preferred: false}})
 				continue
 			}
 
@@ -315,7 +483,7 @@ func (m HintMerger) Merge() TopologyHint {
 	})
 
 	if bestHint == nil {
-		bestHint = &TopologyHint{defaultAffinity, false}
+		bestHint = &TopologyHint{NUMANodeAffinity: defaultAffinity, Preferred: false}
 	}
 
 	return *bestHint

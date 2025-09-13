@@ -193,10 +193,17 @@ func (m *ManagerImpl) generateDeviceTopologyHints(resource string, available set
 		// Otherwise, create a new hint from the NUMA mask and add it to the
 		// list of hints.  We set all hint preferences to 'false' on the first
 		// pass through.
-		hints = append(hints, topologymanager.TopologyHint{
+		hint := topologymanager.TopologyHint{
 			NUMANodeAffinity: mask,
 			Preferred:        false,
-		})
+		}
+		
+		// Add enhanced topology information if feature gate is enabled
+		if topologymanager.EnhancedTopologyHintsEnabled() {
+			m.calculateEnhancedTopologyFields(&hint, resource, request)
+		}
+		
+		hints = append(hints, hint)
 	})
 
 	// Loop back through all hints and update the 'Preferred' field based on
@@ -250,3 +257,87 @@ func (m *ManagerImpl) getContainerDeviceRequest(container *v1.Container) map[str
 	}
 	return containerRequests
 }
+
+// calculateEnhancedTopologyFields calculates enhanced topology metrics for KEP-10002
+func (m *ManagerImpl) calculateEnhancedTopologyFields(hint *topologymanager.TopologyHint, resource string, requestedDevices int) {
+	// Only calculate enhanced fields when the feature gate is enabled
+	if !topologymanager.EnhancedTopologyHintsEnabled() {
+		return
+	}
+	
+	if hint.NUMANodeAffinity == nil {
+		return
+	}
+	
+	numaNodes := hint.NUMANodeAffinity.GetBits()
+	if len(numaNodes) == 0 {
+		return
+	}
+	
+	// Calculate hop count: 0 for single NUMA node, 1+ for multi-NUMA
+	hopCount := len(numaNodes) - 1
+	if hopCount < 0 {
+		hopCount = 0
+	}
+	
+	// Calculate device-specific distance based on NUMA distance matrix
+	var totalDistance int
+	nodeCount := len(numaNodes)
+	
+	if nodeCount == 1 {
+		// Local device access - use standard Linux NUMA distance
+		totalDistance = 10
+	} else {
+		// Multi-NUMA: calculate average inter-node distance for device access
+		// Device access is more sensitive to NUMA distance than CPU
+		totalDistance = 10 + (hopCount * 20) // 10=local, 30=1-hop, 50=2-hop, etc.
+	}
+	
+	// Calculate device bandwidth estimate (simplified model)
+	// Device bandwidth varies significantly by device type and interconnect
+	baseBandwidth := 80.0 // GB/s baseline for local device access (conservative estimate)
+	bandwidthPenalty := float64(hopCount) * 0.4 // 40% penalty per hop for device interconnects
+	bandwidth := baseBandwidth * (1.0 - bandwidthPenalty)
+	if bandwidth < 10.0 {
+		bandwidth = 10.0 // Minimum device bandwidth floor
+	}
+	
+	// Calculate device-specific topology score: lower is better
+	// Device workloads are sensitive to both latency and bandwidth
+	
+	// Count available devices in the selected NUMA nodes for utilization calculation
+	availableDevices := 0
+	for _, device := range m.allDevices[resource] {
+		if device.Topology != nil {
+			deviceNodes := m.getNUMANodeIds(device.Topology)
+			for _, nodeID := range deviceNodes {
+				for _, selectedNode := range numaNodes {
+					if nodeID == selectedNode {
+						availableDevices++
+						break
+					}
+				}
+			}
+		}
+	}
+	
+	// Device utilization ratio
+	utilizationRatio := float64(requestedDevices) / float64(availableDevices)
+	if utilizationRatio > 1.0 {
+		utilizationRatio = 1.0
+	}
+	
+	// Device-specific scoring factors
+	distancePenalty := float64(totalDistance-10) * 2.0 // Moderate penalty for device distance
+	hopPenalty := float64(hopCount) * 12.0 // Higher penalty for device cross-NUMA access
+	utilizationBonus := (1.0 - utilizationRatio) * 10.0 // Bonus for better device utilization
+	
+	score := distancePenalty + hopPenalty - utilizationBonus
+	if score < 0.0 {
+		score = 0.0
+	}
+	
+	// Set the enhanced fields
+	hint.SetEnhancedFields(&hopCount, &bandwidth, &totalDistance, &score)
+}
+
